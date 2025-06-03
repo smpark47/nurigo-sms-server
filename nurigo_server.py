@@ -9,7 +9,7 @@ CORS(app)
 NURIGO_API_URL = "https://api.coolsms.co.kr/messages/v4/send-many"
 API_KEY = "NCSQ4IUXA7HZXKZP"
 API_SECRET = "Z32QAUC937DLGU82U92OUGUY75ZAIAGI"
-FROM_NUMBER = "01012345678"  # 실제 인증된 발신번호로 교체 필요
+FROM_NUMBER = "01080348069"  # 실제 인증된 발신번호로 교체 필요
 
 @app.route("/send-bulk", methods=["POST"])
 def send_bulk():
