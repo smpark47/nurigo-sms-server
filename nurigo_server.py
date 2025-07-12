@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
@@ -6,7 +5,7 @@ import os
 import base64
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 NURIGO_API_URL = "https://api.coolsms.co.kr/messages/v4/send-many"
 API_KEY = "NCSQ4IUXA7HZXKZP"
