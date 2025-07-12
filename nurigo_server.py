@@ -25,22 +25,16 @@ def send_bulk():
                 "text": f"[서울더함수학학원]\n{s['name']} 학생\n6월 월간보고\n{format_message(s)}"
             })
 
-        payload = {
-            "messages": messages
-        }
-
-        headers = {
-            "Authorization": f"Basic {API_KEY}:{API_SECRET}",
-            "Content-Type": "application/json"
-        }
+        payload = { "messages": messages }
 
         res = requests.post(NURIGO_API_URL, json=payload, auth=(API_KEY, API_SECRET))
         print("📬 Nurigo 응답:", res.status_code, res.text)
+
         return jsonify(res.json()), res.status_code
 
     except Exception as e:
         print("❌ 서버 오류:", str(e))
-        return jsonify({"error": str(e)}), 500
+        return jsonify({ "error": str(e) }), 500
 
 def format_message(s):
     return f"""
