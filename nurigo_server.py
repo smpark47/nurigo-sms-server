@@ -28,7 +28,6 @@ def send_bulk():
 
         payload = { "messages": messages }
 
-        # Basic 인증 헤더 생성
         auth_string = f"{API_KEY}:{API_SECRET}"
         auth_bytes = auth_string.encode("utf-8")
         auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
