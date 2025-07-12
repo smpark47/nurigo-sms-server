@@ -1,7 +1,9 @@
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import os
+import base64
 
 app = Flask(__name__)
 CORS(app)
@@ -9,7 +11,7 @@ CORS(app)
 NURIGO_API_URL = "https://api.coolsms.co.kr/messages/v4/send-many"
 API_KEY = "NCSQ4IUXA7HZXKZP"
 API_SECRET = "Z32QAUC937DLGU82U92OUGUY75ZAIAGI"
-FROM_NUMBER = "01080348069"  # 실제 인증된 발신번호로 교체 필요
+FROM_NUMBER = "01080348069"
 
 @app.route("/send-bulk", methods=["POST"])
 def send_bulk():
@@ -27,7 +29,16 @@ def send_bulk():
 
         payload = { "messages": messages }
 
-        res = requests.post(NURIGO_API_URL, json=payload, auth=(API_KEY, API_SECRET))
+        # Basic 인증 헤더 생성
+        auth_string = f"{API_KEY}:{API_SECRET}"
+        auth_bytes = auth_string.encode("utf-8")
+        auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
+        headers = {
+            "Authorization": f"Basic {auth_base64}",
+            "Content-Type": "application/json"
+        }
+
+        res = requests.post(NURIGO_API_URL, json=payload, headers=headers)
         print("📬 Nurigo 응답:", res.status_code, res.text)
 
         return jsonify(res.json()), res.status_code
