@@ -38,7 +38,7 @@ def send_bulk():
                 continue
 
             try:
-                response = message_service.send_one({
+                response = message_service.send({
                     "to": to,
                     "from": FROM_NUMBER,
                     "text": text
