@@ -2,12 +2,11 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import os
-import base64
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-NURIGO_API_URL = "https://api.coolsms.co.kr/messages/v4/send-many"
+SOLAPI_API_URL = "https://api.solapi.com/messages/v4/send-many"
 API_KEY = "NCSQ4IUXA7HZXKZP"
 API_SECRET = "Z32QAUC937DLGU82U92OUGUY75ZAIAGI"
 FROM_NUMBER = "01080348069"
@@ -27,15 +26,12 @@ def send_bulk():
 
         payload = { "messages": messages }
 
-        auth_string = f"{API_KEY}:{API_SECRET}"
-        auth_bytes = auth_string.encode("utf-8")
-        auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
         headers = {
-            "Authorization": f"Basic {auth_base64}",
+            "Authorization": API_KEY,
             "Content-Type": "application/json"
         }
 
-        res = requests.post(NURIGO_API_URL, json=payload, headers=headers)
+        res = requests.post(SOLAPI_API_URL, json=payload, headers=headers)
         return jsonify(res.json()), res.status_code
 
     except Exception as e:
