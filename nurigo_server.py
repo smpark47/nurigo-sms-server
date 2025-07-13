@@ -1,15 +1,25 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
+import time
+import hmac
+import hashlib
+import base64
 import os
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app)
 
-SOLAPI_API_URL = "https://api.solapi.com/messages/v4/send-many"
 API_KEY = "NCSQ4IUXA7HZXKZP"
 API_SECRET = "Z32QAUC937DLGU82U92OUGUY75ZAIAGI"
 FROM_NUMBER = "01080348069"
+SOLAPI_URL = "/messages/v4/send-many"
+BASE_URL = "https://api.solapi.com"
+
+def make_signature(method, uri, timestamp, api_secret):
+    data = f"{timestamp}{method.upper()}{uri}"
+    hashed = hmac.new(api_secret.encode('utf-8'), data.encode('utf-8'), hashlib.sha256)
+    return base64.b64encode(hashed.digest()).decode()
 
 @app.route("/send-bulk", methods=["POST"])
 def send_bulk():
@@ -25,13 +35,16 @@ def send_bulk():
             })
 
         payload = { "messages": messages }
+        timestamp = str(int(time.time() * 1000))
+        signature = make_signature("POST", SOLAPI_URL, timestamp, API_SECRET)
 
         headers = {
-            "Authorization": API_KEY,
-            "Content-Type": "application/json"
+            "Authorization": f"HMAC {API_KEY}:{signature}",
+            "Content-Type": "application/json",
+            "Timestamp": timestamp
         }
 
-        res = requests.post(SOLAPI_API_URL, json=payload, headers=headers)
+        res = requests.post(BASE_URL + SOLAPI_URL, json=payload, headers=headers)
         return jsonify(res.json()), res.status_code
 
     except Exception as e:
