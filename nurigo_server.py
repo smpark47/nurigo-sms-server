@@ -22,14 +22,16 @@ def send_bulk():
         if not messages:
             return jsonify({"error": "No messages to send"}), 400
 
-        send_results = []
-        for m in messages:
-            to = m.get("phone") or m.get("to")
-            text = m.get("text", "")
-            name = m.get("name", "")
+        # 필수 필드만 추출하여 Solapi에 넘기기
+        solapi_messages = []
+        results_map = []
+        for msg in messages:
+            to = msg.get("phone") or msg.get("to")
+            text = msg.get("text", "")
+            name = msg.get("name", "")
 
             if not to or not text:
-                send_results.append({
+                results_map.append({
                     "name": name,
                     "phone": to,
                     "status": "failed",
@@ -37,27 +39,27 @@ def send_bulk():
                 })
                 continue
 
-            try:
-                response = message_service.send({
-                    "to": to,
-                    "from": FROM_NUMBER,
-                    "text": text
-                })
-                send_results.append({
-                    "name": name,
-                    "phone": to,
-                    "status": "sent",
-                    "result": {"message": response.get("message", "Sent")}
-                })
-            except Exception as e:
-                send_results.append({
-                    "name": name,
-                    "phone": to,
-                    "status": "failed",
-                    "result": {"message": str(e)}
-                })
+            solapi_messages.append({
+                "to": to,
+                "from": FROM_NUMBER,
+                "text": text
+            })
+            results_map.append({
+                "name": name,
+                "phone": to,
+                "status": "queued",
+                "result": {"message": "전송 시도 중"}
+            })
 
-        return jsonify(send_results), 200
+        if not solapi_messages:
+            return jsonify(results_map), 400
+
+        # Solapi로 실제 전송
+        response = message_service.send_many({
+            "messages": solapi_messages
+        })
+
+        return jsonify(results_map), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
