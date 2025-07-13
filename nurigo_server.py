@@ -41,7 +41,7 @@ def send_bulk():
         headers = {
             "Authorization": f"HMAC {API_KEY}:{signature}",
             "Content-Type": "application/json",
-            "Timestamp": timestamp
+            "x-solapi-date": timestamp
         }
 
         res = requests.post(BASE_URL + SOLAPI_URL, json=payload, headers=headers)
