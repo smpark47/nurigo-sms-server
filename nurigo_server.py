@@ -39,7 +39,7 @@ def send_bulk():
         signature = make_signature("POST", SOLAPI_URL, timestamp, API_SECRET)
 
         headers = {
-            "Authorization": f"HMAC {API_KEY}:{signature}",
+            "Authorization": f"HMAC-SHA256 {API_KEY}:{signature}",
             "Content-Type": "application/json",
             "x-solapi-date": timestamp
         }
