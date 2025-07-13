@@ -16,14 +16,13 @@ FROM_NUMBER = "01080348069"
 def send_bulk():
     try:
         students = request.json
-        print("📨 수신한 요청 데이터:", students)
-
         messages = []
         for s in students:
+            text = "[서울더함수학학원]\n" + s["name"] + " 학생\n6월 월간보고\n기타 사항은 개별 확인 바랍니다."
             messages.append({
                 "to": s["phone"],
                 "from": FROM_NUMBER,
-                "text": f"[서울더함수학학원]\n{s['name']} 학생\n6월 월간보고\n{format_message(s)}"
+                "text": text
             })
 
         payload = { "messages": messages }
@@ -37,23 +36,10 @@ def send_bulk():
         }
 
         res = requests.post(NURIGO_API_URL, json=payload, headers=headers)
-        print("📬 Nurigo 응답:", res.status_code, res.text)
-
         return jsonify(res.json()), res.status_code
 
     except Exception as e:
-        print("❌ 서버 오류:", str(e))
         return jsonify({ "error": str(e) }), 500
-
-def format_message(s):
-    return f"""
-진도: {s.get('subject', '')} {s.get('chapter', '')}
-성실도: {s.get('diligence', '')}/10
-진도 소화도: {s.get('progress', '')}/10
-이해도: {s.get('focus', '')}/10
-기본: {s.get('basic', '')}/10, 중간: {s.get('intermediate', '')}/10, 심화: {s.get('advanced', '')}/10
-특이사항: {s.get('specialNotes', '')}
-""".strip()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
