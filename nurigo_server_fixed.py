@@ -21,6 +21,7 @@ import os, json, hmac, hashlib, secrets, requests
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
+from flask import send_from_directory
 
 app = Flask(__name__)
 CORS(app)
@@ -120,6 +121,9 @@ WEB_UI_HTML = r"""<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>서울더함수학학원 문자 전송 프로그램</title>
+<link rel="icon" href="/static/favicon-chat.svg" type="image/svg+xml">
+<meta name="theme-color" content="#2563eb">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <style>
 :root{--b:#cbd5e1;--text:#334155;--muted:#64748b;--bg:#f8fafc;--white:#fff;--brand:#2563eb;--accent:#0ea5e9}
 *{box-sizing:border-box}
@@ -566,9 +570,21 @@ async function send(){
 def ui():
     return Response(WEB_UI_HTML, mimetype="text/html; charset=utf-8")
 
+# ✔️ 말풍선+SMS (블루)
 @app.get("/favicon.ico")
 def _favicon():
-    return ("", 204)
+    return send_from_directory("static", "favicon-chat.svg", mimetype="image/svg+xml")
+
+# 또는 ✔️ 종이비행기 (청록)
+# @app.get("/favicon.ico")
+# def _favicon():
+#     return send_from_directory("static", "favicon-plane.svg", mimetype="image/svg+xml")
+
+# 또는 ✔️ 계산기 (퍼플)
+# @app.get("/favicon.ico")
+# def _favicon():
+#     return send_from_directory("static", "favicon-math.svg", mimetype="image/svg+xml")
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
