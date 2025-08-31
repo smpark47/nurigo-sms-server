@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Nurigo/Solapi SMS proxy (Flask)
+Nurigo/Solapi SMS proxy (Flask) - refined UI
 
 Endpoints
   GET  /                   -> health
@@ -24,7 +24,7 @@ from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)  # tighten allowed origins in production
+CORS(app)  # tighten allowed origins in production if needed
 
 DEFAULT_SENDER = os.getenv("DEFAULT_SENDER", "").strip()
 FORWARD_URL    = os.getenv("FORWARD_URL", "").strip()
@@ -52,7 +52,7 @@ def sms_config():
     return jsonify({"provider": current_provider(), "defaultFrom": DEFAULT_SENDER})
 
 def check_auth():
-    # Optional bearer gate to prevent open relay
+    # Optional bearer gate
     if not AUTH_TOKEN:
         return True, None
     got = request.headers.get("Authorization", "")
@@ -81,7 +81,6 @@ def sms_send():
     if not to or not text:
         return jsonify({"ok": False, "error": "missing to/text"}), 400
 
-    # DRY-RUN: never forward or call Solapi when dry=True
     if dry:
         return jsonify({
             "ok": True,
@@ -91,7 +90,6 @@ def sms_send():
             "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         })
 
-    # 1) Forwarding to existing HTTP SMS service
     if FORWARD_URL:
         try:
             r = requests.post(
@@ -107,12 +105,11 @@ def sms_send():
         except Exception as e:
             return jsonify({"ok": False, "error": "forward-failed", "detail": str(e)}), 502
 
-    # 2) Direct call to Solapi (HMAC-SHA256)
     if SOLAPI_KEY and SOLAPI_SECRET:
         try:
-            # Authorization: HMAC-SHA256 apiKey=<key>, date=<ISO8601Z>, salt=<hex>, signature=<hex>
+            # HMAC-SHA256 auth header
             date_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            salt = secrets.token_hex(16)  # random per request
+            salt = secrets.token_hex(16)
             signature = hmac.new(
                 SOLAPI_SECRET.encode("utf-8"),
                 (date_time + salt).encode("utf-8"),
@@ -137,7 +134,6 @@ def sms_send():
         except Exception as e:
             return jsonify({"ok": False, "error": "solapi-failed", "detail": str(e)}), 502
 
-    # 3) Fallback mock when neither forwarding nor solapi creds are present
     return jsonify({
         "ok": True,
         "provider": "mock",
@@ -146,32 +142,38 @@ def sms_send():
         "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     })
 
-# --- Simple Web UI (same origin) ---
+# --- Simple Web UI ---
 WEB_UI_HTML = r"""<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>문자 전송 프로그램</title>
 <style>
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR,Arial,sans-serif;background:#f8fafc;margin:0}
+:root{--b:#cbd5e1;--text:#334155;--muted:#64748b;--bg:#f8fafc;--white:#fff;--brand:#2563eb;--accent:#0ea5e9}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR,Arial,sans-serif;background:var(--bg);margin:0}
 .wrap{max-width:980px;margin:24px auto;padding:16px}
-.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.card{background:var(--white);border:1px solid #e5e7eb;border-radius:12px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
 .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start}
-.col{flex:1 1 260px;min-width:260px;display:flex;flex-direction:column;gap:6px}
-label{display:block;font-size:12px;color:#334155;margin-bottom:6px}
-input,select,textarea{width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px;box-sizing:border-box}
+.controls{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.col{display:flex;flex-direction:column;gap:6px;min-width:220px}
+label{display:block;font-size:12px;color:var(--text)}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--b);border-radius:10px;font-size:14px;background:var(--white)}
 textarea{min-height:120px}
-button{padding:10px 14px;border-radius:10px;border:1px solid #cbd5e1;background:#fff;cursor:pointer}
-button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
-.pill{padding:8px 12px;border-radius:999px;border:1px solid #cbd5e1;background:#fff;font-size:13px;cursor:pointer;white-space:nowrap}
-.pill.on{background:#0ea5e9;color:#fff;border-color:#0ea5e9}
-.muted{color:#64748b;font-size:12px}
+button{padding:10px 14px;border-radius:10px;border:1px solid var(--b);background:var(--white);cursor:pointer}
+button.primary{background:var(--brand);color:var(--white);border-color:var(--brand)}
+.pill{padding:8px 12px;border-radius:999px;border:1px solid var(--b);background:var(--white);font-size:13px;cursor:pointer;white-space:nowrap}
+.pill.on{background:var(--accent);color:var(--white);border-color:var(--accent)}
+.muted{color:var(--muted);font-size:12px}
 .grid{display:grid;gap:10px}
 .grid.teachers{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
 .grid.students{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
 .templates{display:flex;flex-wrap:wrap;gap:8px}
 .mt8{margin-top:8px}.mt12{margin-top:12px}.mt16{margin-top:16px}.mt24{margin-top:24px}
 pre{background:#0b1020;color:#c7d2fe;padding:12px;border-radius:10px;overflow:auto}
-.inline{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
+h3{margin:0 0 8px 0;font-size:16px}
+/* dry-run toggle box */
+.togglebox{display:flex;align-items:center;gap:8px;border:1px solid var(--b);border-radius:10px;padding:8px 10px;background:var(--white)}
+.togglebox input{transform:scale(1.1)}
 #search{max-width:100%}
 </style>
 </head>
@@ -180,7 +182,7 @@ pre{background:#0b1020;color:#c7d2fe;padding:12px;border-radius:10px;overflow:au
   <h2>문자 전송 프로그램</h2>
 
   <div class="card">
-    <div class="row">
+    <div class="controls">
       <div class="col">
         <label>발신번호 (서버 기본값)</label>
         <input id="fromNum" disabled>
@@ -188,10 +190,10 @@ pre{background:#0b1020;color:#c7d2fe;padding:12px;border-radius:10px;overflow:au
       </div>
       <div class="col">
         <label>드라이런(dry-run)</label>
-        <div class="inline">
+        <label class="togglebox">
           <input type="checkbox" id="dry" />
-          <span class="muted">체크 시 실제 발송 없이 요청/응답만 확인</span>
-        </div>
+          <span class="muted">실제 발송 없이 요청/응답만 확인</span>
+        </label>
       </div>
       <div class="col">
         <label>검색(학생)</label>
@@ -251,7 +253,7 @@ pre{background:#0b1020;color:#c7d2fe;padding:12px;border-radius:10px;overflow:au
 </div>
 
 <script>
-// === CSV에서 추출하여 하드코딩 (요청에 따라 박선민·주말반쌤 제외) ===
+// ===== 여기 ROSTER를 실제 데이터로 교체하세요 =====
 const ROSTER = {
   "최윤영": [
     {"id": "최윤영::기도윤", "name": "기도윤", "parentPhone": "01047612937", "studentPhone": "01057172937"},
@@ -374,8 +376,12 @@ const ROSTER = {
     {"id": "황재선::이채영", "name": "이채영", "parentPhone": "01035201122", "studentPhone": ""}
   ]
 };
+// ===============================================
 
-// (성 빼고) 이름만 반환: 한글 2자 이상이면 첫 글자 제거. 스페이스가 있으면 마지막 토큰.
+// 요청: "박선민", "주말반쌤" 제외
+["박선민","주말반쌤"].forEach(k => { if (ROSTER[k]) delete ROSTER[k]; });
+
+// (성 빼고) 이름만 반환
 function givenName(full) {
   const s = String(full||"").trim();
   if (!s) return "";
@@ -384,7 +390,7 @@ function givenName(full) {
   return parts.length > 1 ? parts[parts.length-1] : s;
 }
 
-// 원클릭 4문구
+// 원클릭 4문구 (요청 문구)
 const TEMPLATES = [
   { label:"미등원 안내",  text:"안녕하세요. 서울더함수학학원입니다. {given} 아직 등원 하지 않았습니다." },
   { label:"조퇴 안내",   text:"서울더함수학학원입니다. {given} 아파서 오늘 조퇴하였습니다. 아이 상태 확인해주세요." },
@@ -403,12 +409,12 @@ const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
 
 const state = {
-  provider:"", defaultFrom:"",
   roster: ROSTER,
   teacherList: Object.keys(ROSTER),
   currentTeacher: "",
   currentStudent: null,
-  toType: "parent"
+  toType: "parent",
+  defaultFrom: ""
 };
 
 async function loadConfig(){
@@ -480,10 +486,10 @@ function renderStudents(){
     state.currentStudent=null; updatePreview(); return;
   }
   filtered.forEach(s=>{
-    const btn=document.createElement("button");
-    btn.className="pill"+(state.currentStudent && state.currentStudent.id===s.id ? " on":"");
-    btn.textContent = s.name; // 전화번호 배지 제거, 이름만
-    btn.addEventListener("click",()=>{
+    const b=document.createElement("button");
+    b.className="pill"+(state.currentStudent && state.currentStudent.id===s.id ? " on":"");
+    b.textContent = s.name; // 이름만
+    b.addEventListener("click",()=>{
       state.currentStudent=s;
       if(!$("#text").value.trim()){
         const t=TEMPLATES[0];
@@ -491,7 +497,7 @@ function renderStudents(){
       }
       updatePreview(); renderStudents();
     });
-    box.appendChild(btn);
+    box.appendChild(b);
   });
 }
 
@@ -540,7 +546,7 @@ async function send(){
   setupTemplates();
   setupToType();
 
-  // 초기 선생님 선택: 첫 명
+  state.teacherList = Object.keys(state.roster);
   state.currentTeacher = state.teacherList[0] || "";
   renderTeachers(); renderStudents(); updatePreview();
 
@@ -551,6 +557,7 @@ async function send(){
 </script>
 </body></html>
 """
+
 @app.get("/ui")
 def ui():
     return Response(WEB_UI_HTML, mimetype="text/html; charset=utf-8")
