@@ -119,7 +119,7 @@ def sms_send():
 WEB_UI_HTML = r"""<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>문자 전송 프로그램</title>
+<title>서울더함수학학원 문자 전송 프로그램</title>
 <style>
 :root{--b:#cbd5e1;--text:#334155;--muted:#64748b;--bg:#f8fafc;--white:#fff;--brand:#2563eb;--accent:#0ea5e9}
 *{box-sizing:border-box}
