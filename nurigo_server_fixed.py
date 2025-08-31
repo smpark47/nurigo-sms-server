@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Nurigo/Solapi SMS proxy (Flask) - refined UI (send-row dry-run, Safari fix)
+Nurigo/Solapi SMS proxy (Flask) - minimal dry-run (checkbox + text)
 
 Endpoints
   GET  /                   -> health
@@ -170,35 +170,11 @@ button.primary{background:var(--brand);color:var(--white);border-color:var(--bra
 pre{background:#0b1020;color:#c7d2fe;padding:12px;border-radius:10px;overflow:auto}
 h3{margin:0 0 8px 0;font-size:16px}
 
-/* send-row: button + dry-run toggle */
+/* send-row layout */
 .actionbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.actionbar > *{min-width:0}
+.inlinecheck{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.inlinecheck input{margin:0;appearance:auto;-webkit-appearance:checkbox}
 
-/* Safari-safe toggle chip (div + input + label[for]) */
-.togglechip{
-  display:flex;align-items:center;gap:6px;
-  border:1px solid var(--b);border-radius:999px;
-  padding:6px 10px;background:var(--white);
-  line-height:1;white-space:nowrap;
-  flex:0 0 auto;flex-shrink:0;
-  min-width:max-content; /* fit content width; wrap as a whole to next line */
-  word-break:keep-all;
-}
-.togglechip input{
-  margin:0; /* avoid transform to prevent clipping on iOS */
-  accent-color: var(--brand);
-}
-.chiplabel{
-  display:inline-block;white-space:nowrap;
-  color:var(--muted);
-}
-
-/* iOS older fallback */
-@supports (-webkit-hyphens:none){
-  .togglechip{min-width:-webkit-max-content}
-}
-
-/* mobile safety */
 #search{max-width:100%}
 </style>
 </head>
@@ -258,12 +234,13 @@ h3{margin:0 0 8px 0;font-size:16px}
       <div class="muted mt8">미리보기: <span id="preview"></span></div>
     </div>
 
+    <!-- Send row: button + (checkbox + text only) -->
     <div class="actionbar mt16">
       <button id="send" class="primary">전송</button>
-      <div class="togglechip">
+      <label for="dry" class="inlinecheck">
         <input type="checkbox" id="dry" />
-        <label for="dry" class="chiplabel">dry-run</label>
-      </div>
+        <span class="muted">dry-run</span>
+      </label>
       <span id="status" class="muted"></span>
     </div>
 
@@ -275,6 +252,7 @@ h3{margin:0 0 8px 0;font-size:16px}
 </div>
 
 <script>
+// ===== 실제 ROSTER로 교체하세요 =====
 const ROSTER = {
   "최윤영": [
     {"id": "최윤영::기도윤", "name": "기도윤", "parentPhone": "01047612937", "studentPhone": "01057172937"},
