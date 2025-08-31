@@ -7,23 +7,30 @@ Endpoints
   GET  /routes             -> list routes (debug)
   GET  /api/sms/config     -> {"provider": "...", "defaultFrom": "010..."}
   POST /api/sms            -> {to, from, text, dry?}
+  GET  /api/roster         -> {ok, teachers, roster}  # CSV/JSON에서 담당 매핑 자동 로드
   GET  /ui                 -> simple web UI
 
 Env Vars
-  PORT            : bind port (Render sets this automatically)
-  DEFAULT_SENDER  : default "from" number (e.g., 01080348069)
-  SOLAPI_KEY      : Solapi API key (use if not forwarding)
-  SOLAPI_SECRET   : Solapi API secret
-  FORWARD_URL     : if set, forward JSON to this URL instead of calling Solapi
-  AUTH_TOKEN      : if set, require header "Authorization: Bearer <AUTH_TOKEN>"
+  PORT             : bind port (Render sets this automatically)
+  DEFAULT_SENDER   : default "from" number (e.g., 01080348069)
+  SOLAPI_KEY       : Solapi API key (use if not forwarding)
+  SOLAPI_SECRET    : Solapi API secret
+  FORWARD_URL      : if set, forward JSON to this URL instead of calling Solapi
+  AUTH_TOKEN       : if set, require header "Authorization: Bearer <AUTH_TOKEN>"
+
+  # Roster auto-loading (아래 우선순위대로 사용)
+  ROSTER_JSON      : JSON 문자열 ({"teachers":[...], "roster":{teacher:[...]}})
+  ROSTER_CSV       : CSV 전체 텍스트
+  ROSTER_URL       : CSV/JSON의 공개 URL (예: https://.../static/roster.csv)
+  static/roster.csv: 리포 내 정적 파일이 존재하면 이를 사용
 """
-import os, json, hmac, hashlib, secrets, requests
+import os, io, json, hmac, hashlib, secrets, requests, csv
 from datetime import datetime, timezone
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static")
 CORS(app)  # tighten allowed origins in production
 
 DEFAULT_SENDER = os.getenv("DEFAULT_SENDER", "").strip()
@@ -32,12 +39,131 @@ SOLAPI_KEY     = os.getenv("SOLAPI_KEY", "").strip()
 SOLAPI_SECRET  = os.getenv("SOLAPI_SECRET", "").strip()
 AUTH_TOKEN     = os.getenv("AUTH_TOKEN", "").strip()
 
+ROSTER_JSON    = os.getenv("ROSTER_JSON", "")
+ROSTER_CSV     = os.getenv("ROSTER_CSV", "")
+ROSTER_URL     = os.getenv("ROSTER_URL", "").strip()
+
+# --- helpers -----------------------------------------------------------------
+
 def current_provider() -> str:
     if FORWARD_URL:
         return "forward"
     if SOLAPI_KEY and SOLAPI_SECRET:
         return "solapi"
     return "mock"
+
+def _keyify(s: str) -> str:
+    return "".join(ch for ch in s.strip().lower() if ch.isalnum() or '\uac00' <= ch <= '\ud7a3')
+
+TEACHER_KEYS = {"담당","담당선생","담당선생님","선생님","teacher","tch","담당자"}
+NAME_KEYS    = {"학생이름","이름","name","student","학생","성명"}
+PARENT_KEYS  = {"학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"}
+STUDENT_KEYS = {"학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"}
+
+def _detect_indices(headers):
+    H = [_keyify(h) for h in headers]
+    def find(cands):
+        for i, h in enumerate(H):
+            if h in cands:
+                return i
+        return -1
+    idx = {
+        "teacher": find({ _keyify(x) for x in TEACHER_KEYS }),
+        "name":    find({ _keyify(x) for x in NAME_KEYS }),
+        "parent":  find({ _keyify(x) for x in PARENT_KEYS }),
+        "student": find({ _keyify(x) for x in STUDENT_KEYS }),
+    }
+    return idx
+
+def _only_digits(s): return "".join(ch for ch in (s or "") if ch.isdigit())
+
+def _build_roster_from_csv_text(text: str):
+    # 파서: utf-8-sig 안전, 따옴표/콤마 처리
+    f = io.StringIO(text.replace("\r\n","\n").replace("\r","\n"))
+    reader = csv.reader(f)
+    rows = list(reader)
+    if not rows:
+        return {"ok": False, "error": "empty-csv"}
+
+    headers = rows[0]
+    idx = _detect_indices(headers)
+    if idx["teacher"] < 0 or idx["name"] < 0:
+        return {"ok": False, "error": "header-missing"}
+
+    roster = {}
+    teachers_set = set()
+    for r in rows[1:]:
+        if not r or len(r) < 2: 
+            continue
+        teacher = (r[idx["teacher"]] if idx["teacher"]>=0 and idx["teacher"]<len(r) else "").strip()
+        name    = (r[idx["name"]]    if idx["name"]>=0    and idx["name"]<len(r) else "").strip()
+        if not teacher or not name:
+            continue
+        parent  = _only_digits(r[idx["parent"]])  if idx["parent"] >=0 and idx["parent"] < len(r) else ""
+        student = _only_digits(r[idx["student"]]) if idx["student"]>=0 and idx["student"]<len(r) else ""
+        obj = {"id": f"{teacher}::{name}", "name": name, "parentPhone": parent, "studentPhone": student}
+        roster.setdefault(teacher, []).append(obj)
+        teachers_set.add(teacher)
+
+    teachers = sorted(teachers_set, key=lambda x: x)
+    for t in teachers:
+        roster[t].sort(key=lambda s: s["name"])
+    return {"ok": True, "teachers": teachers, "roster": roster}
+
+def _load_roster():
+    # 1) JSON env
+    if ROSTER_JSON:
+        try:
+            data = json.loads(ROSTER_JSON)
+            if "teachers" in data and "roster" in data:
+                return {"ok": True, "teachers": data["teachers"], "roster": data["roster"], "source": "env-json"}
+        except Exception:
+            pass
+
+    # 2) CSV env
+    if ROSTER_CSV:
+        out = _build_roster_from_csv_text(ROSTER_CSV)
+        if out.get("ok"):
+            out["source"] = "env-csv"
+            return out
+
+    # 3) URL (CSV or JSON)
+    if ROSTER_URL:
+        try:
+            r = requests.get(ROSTER_URL, timeout=15)
+            ctype = (r.headers.get("Content-Type","") or "").lower()
+            txt = r.text
+            if "json" in ctype:
+                data = r.json()
+                if "teachers" in data and "roster" in data:
+                    return {"ok": True, "teachers": data["teachers"], "roster": data["roster"], "source": "url-json"}
+            # assume CSV otherwise
+            # strip UTF-8 BOM if any
+            if txt and txt[:1] == "\ufeff":
+                txt = txt[1:]
+            out = _build_roster_from_csv_text(txt)
+            if out.get("ok"):
+                out["source"] = "url-csv"
+                return out
+        except Exception as e:
+            return {"ok": False, "error": f"url-fetch-failed: {e}"}
+
+    # 4) static/roster.csv in repo
+    local_static = os.path.join(app.static_folder, "roster.csv")
+    if os.path.exists(local_static):
+        try:
+            with open(local_static, "r", encoding="utf-8-sig") as f:
+                txt = f.read()
+            out = _build_roster_from_csv_text(txt)
+            if out.get("ok"):
+                out["source"] = "static-csv"
+                return out
+        except Exception as e:
+            return {"ok": False, "error": f"static-read-failed: {e}"}
+
+    return {"ok": False, "error": "roster-not-configured"}
+
+# --- routes ------------------------------------------------------------------
 
 @app.get("/")
 def root():
@@ -50,6 +176,12 @@ def routes():
 @app.get("/api/sms/config")
 def sms_config():
     return jsonify({"provider": current_provider(), "defaultFrom": DEFAULT_SENDER})
+
+@app.get("/api/roster")
+def api_roster():
+    data = _load_roster()
+    status = 200 if data.get("ok") else 404
+    return jsonify(data), status
 
 def check_auth():
     # Optional bearer gate to prevent open relay
@@ -91,7 +223,7 @@ def sms_send():
             "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         })
 
-    # 1) Forwarding to existing HTTP SMS service (only when not dry)
+    # 1) Forwarding to existing HTTP SMS service
     if FORWARD_URL:
         try:
             r = requests.post(
@@ -150,7 +282,7 @@ def sms_send():
 WEB_UI_HTML = r"""<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SMS 테스트 (웹: 선생님/담당학생 빠른 발송)</title>
+<title>SMS 웹 발송 · 선생님/담당학생 자동 로딩</title>
 <style>
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR,Arial,sans-serif;background:#f8fafc;margin:0}
 .wrap{max-width:980px;margin:24px auto;padding:16px}
@@ -169,17 +301,16 @@ button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
 .grid.teachers{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
 .grid.students{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
 .templates{display:flex;flex-wrap:wrap;gap:8px}
-.mt4{margin-top:4px}.mt8{margin-top:8px}.mt12{margin-top:12px}.mt16{margin-top:16px}.mt24{margin-top:24px}
+.mt8{margin-top:8px}.mt12{margin-top:12px}.mt16{margin-top:16px}.mt24{margin-top:24px}
 pre{background:#0b1020;color:#c7d2fe;padding:12px;border-radius:10px;overflow:auto}
 .badge{font-size:11px;background:#eef2ff;color:#3730a3;padding:2px 6px;border-radius:999px;margin-left:6px;border:1px solid #c7d2fe}
 h3{margin:0 0 8px 0;font-size:16px}
-hr{border:none;height:1px;background:#e5e7eb;margin:14px 0}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h2>문자 발송(웹) · 선생님/담당학생 원클릭</h2>
-  <p class="muted">같은 오리진의 <code>/api/sms</code>, <code>/api/sms/config</code>를 호출합니다. CSV를 올려 선생님별 담당학생을 불러오세요.</p>
+  <h2>문자 발송(웹) · 선생님/담당학생 자동 로딩</h2>
+  <p class="muted">서버의 <code>/api/roster</code>에서 교사/학생 목록을 자동 불러옵니다. 필요 시 CSV 업로드로 덮어쓸 수 있어요.</p>
 
   <!-- 서버/보안/설정 -->
   <div class="card">
@@ -192,7 +323,7 @@ hr{border:none;height:1px;background:#e5e7eb;margin:14px 0}
       <div class="col">
         <label>보안 토큰 (선택)</label>
         <input id="token" placeholder="AUTH_TOKEN 사용 시 입력 (예: mytoken)">
-        <div class="muted mt8">서버에 AUTH_TOKEN이 설정된 경우, 발송 시 Authorization 헤더를 자동 첨부합니다.</div>
+        <div class="muted mt8">서버에 AUTH_TOKEN이 설정되었다면 발송 시 Authorization 헤더를 첨부합니다.</div>
       </div>
       <div class="col">
         <label>드라이런(dry-run)</label>
@@ -204,23 +335,18 @@ hr{border:none;height:1px;background:#e5e7eb;margin:14px 0}
     </div>
   </div>
 
-  <!-- CSV 업로드 & 선생님/학생 선택 -->
+  <!-- 자동 로스터 + 수동 CSV -->
   <div class="card mt16">
-    <h3>1) 선생님/담당학생 불러오기</h3>
+    <h3>1) 선생님/담당학생</h3>
     <div class="row">
       <div class="col">
-        <label>CSV 업로드</label>
-        <input type="file" id="csv" accept=".csv,text/csv">
-        <div class="muted mt8">헤더 예시: <b>담당선생</b>, <b>학생이름</b>, <b>학부모전화</b>, <b>학생전화</b> (다른 표기도 자동 인식)</div>
+        <label>자동 로드 상태</label>
+        <div id="rosterInfo" class="muted">/api/roster 호출 대기 중...</div>
       </div>
       <div class="col">
-        <label>저장/불러오기</label>
-        <div class="row">
-          <button id="saveRoster">로컬 저장</button>
-          <button id="loadRoster">로컬 불러오기</button>
-          <button id="clearRoster">로컬 초기화</button>
-        </div>
-        <div class="muted mt8">브라우저 localStorage에 저장/불러옵니다.</div>
+        <label>수동 CSV 업로드(덮어쓰기)</label>
+        <input type="file" id="csv" accept=".csv,text/csv">
+        <div class="muted mt8">헤더 예시: <b>담당선생</b>, <b>학생이름</b>, <b>학부모전화</b>, <b>학생전화</b></div>
       </div>
       <div class="col">
         <label>검색(학생)</label>
@@ -235,13 +361,13 @@ hr{border:none;height:1px;background:#e5e7eb;margin:14px 0}
     <div class="mt12">
       <label>담당 학생</label>
       <div id="studentBox" class="grid students"></div>
-      <div class="muted mt8">학생 버튼을 클릭하면 수신번호가 자동 선택됩니다.</div>
+      <div class="muted mt8">학생 버튼 클릭 → 수신번호 자동 선택</div>
     </div>
   </div>
 
   <!-- 수신대상/문구/발송 -->
   <div class="card mt16">
-    <h3>2) 대상/문구 선택 → 발송</h3>
+    <h3>2) 문구 선택 → 발송</h3>
     <div class="row">
       <div class="col">
         <label>수신 대상</label>
@@ -267,7 +393,7 @@ hr{border:none;height:1px;background:#e5e7eb;margin:14px 0}
       <button id="send" class="primary">전송</button>
       <span id="status" class="muted"></span>
     </div>
-    <div class="mt16">
+    <div class="mt12">
       <label>결과</label>
       <pre id="out">(아직 없음)</pre>
     </div>
@@ -275,7 +401,6 @@ hr{border:none;height:1px;background:#e5e7eb;margin:14px 0}
 </div>
 
 <script>
-const STORAGE_KEY_ROSTER = "sms_ui_roster_v1";
 const STORAGE_KEY_LAST   = "sms_ui_last_teacher_v1";
 const TEMPLATES = [
   { label:"미등원 안내", text:"{name} 학생 아직 등원하지 않았습니다. 확인 부탁드립니다." },
@@ -284,310 +409,201 @@ const TEMPLATES = [
   { label:"숙제 미제출", text:"{name} 학생 오늘 숙제 미제출입니다. 가정에서 점검 부탁드립니다." },
   { label:"수업 공지",  text:"{name} 학생 금일 수업 관련 안내드립니다: " }
 ];
-const teacherColKeys = ["담당","담당선생","담당선생님","선생님","teacher","tch","담당자"];
-const nameColKeys    = ["학생이름","이름","name","student","학생","성명"];
-const parentColKeys  = ["학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"];
-const studentColKeys = ["학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"];
-const onlyDigits = s => (s||"").replace(/\\D/g, "");
+const onlyDigits = s => (s||"").replace(/\\D/g,"");
 const norm = s => { const d=onlyDigits(s); if(d.length===11) return d.replace(/(\\d{3})(\\d{4})(\\d{4})/,"$1-$2-$3"); if(d.length===10) return d.replace(/(\\d{2,3})(\\d{3,4})(\\d{4})/,"$1-$2-$3"); return s||""; };
 const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
+
 const state = {
-  provider:"", defaultFrom:"", token:"",
-  roster: {},        // { teacher: [ {id,name,parentPhone,studentPhone} ] }
-  teacherList: [],   // ["김T", "이T", ...]
-  currentTeacher: "",
-  currentStudent: null,
-  toType: "parent",
-  filteredStudents: []
+  provider:"", defaultFrom:"",
+  roster:{}, teacherList:[], currentTeacher:"", currentStudent:null,
+  toType:"parent"
 };
 
-async function loadConfig() {
+async function loadConfig(){
+  try{ const r=await fetch("/api/sms/config"); const cfg=await r.json();
+    state.provider=cfg.provider||""; state.defaultFrom=String(cfg.defaultFrom||"");
+    $("#fromNum").value=state.defaultFrom||"(서버 미설정)";
+    $("#cfgInfo").textContent=`provider: ${state.provider||"unknown"}`;
+  }catch{ $("#cfgInfo").textContent="서버 설정을 불러오지 못했습니다."; }
+}
+
+async function autoLoadRoster(){
   try{
-    const r = await fetch("/api/sms/config");
-    const cfg = await r.json();
-    state.provider   = cfg.provider || "";
-    state.defaultFrom= String(cfg.defaultFrom||"");
-    $("#fromNum").value = state.defaultFrom || "(서버 미설정)";
-    $("#cfgInfo").textContent = `provider: ${state.provider || "unknown"}`;
+    const r = await fetch("/api/roster");
+    const data = await r.json();
+    if(!r.ok || !data.ok) throw new Error(data.error||"no roster");
+    state.roster = data.roster||{};
+    state.teacherList = data.teachers||Object.keys(state.roster);
+    const last = localStorage.getItem(STORAGE_KEY_LAST);
+    state.currentTeacher = (last && state.roster[last]) ? last : (state.teacherList[0]||"");
+    $("#rosterInfo").textContent = `자동 로드 성공 (source: ${data.source||"unknown"}) · 교사 ${state.teacherList.length}명`;
+    renderTeachers(); renderStudents(); updatePreview();
   }catch(e){
-    $("#cfgInfo").textContent = "서버 설정을 불러오지 못했습니다.";
+    $("#rosterInfo").textContent = "자동 로드 실패(/api/roster). CSV 업로드로 불러오세요.";
   }
 }
+
 function setupTemplates(){
   const box=$("#tpls"); box.innerHTML="";
   TEMPLATES.forEach(t=>{
     const b=document.createElement("button");
-    b.className="pill";
-    b.textContent=t.label;
+    b.className="pill"; b.textContent=t.label;
     b.addEventListener("click",()=>{
       if(state.currentStudent){
-        $("#text").value = t.text.replaceAll("{name}", state.currentStudent.name||"");
-      }else{
-        $("#text").value = t.text;
-      }
+        $("#text").value=t.text.replaceAll("{name}", state.currentStudent.name||"");
+      }else{ $("#text").value=t.text; }
       updatePreview();
     });
     box.appendChild(b);
   });
 }
+
 function setupToType(){
   $$(".pill[data-to]").forEach(p=>{
     p.addEventListener("click",()=>{
       $$(".pill[data-to]").forEach(x=>x.classList.remove("on"));
       p.classList.add("on");
       state.toType = p.dataset.to;
-      const isCustom = state.toType==="custom";
-      $("#customTo").style.display = isCustom ? "block" : "none";
+      $("#customTo").style.display = (state.toType==="custom") ? "block" : "none";
       updatePreview();
     });
   });
   $("#customTo").addEventListener("input", updatePreview);
 }
-function updatePreview(){
-  const s = state.currentStudent;
-  const to = computeTo();
-  $("#toPreview").textContent = to || "-";
-  const txt = $("#text").value || "";
-  $("#preview").textContent = (txt||"").replaceAll("{name}", s?.name || "");
-}
-function computeTo(){
-  if(state.toType==="custom") return norm($("#customTo").value||"");
-  const s = state.currentStudent;
-  if(!s) return "";
-  if(state.toType==="parent")  return norm(s.parentPhone||"");
-  if(state.toType==="student") return norm(s.studentPhone||"");
-  return "";
-}
-function keyify(h){ return String(h||"").toLowerCase().replace(/\\s+/g,"").replace(/[^\\w가-힣]/g,""); }
-
-function parseCSV(text){
-  // 간단 CSV 파서 (따옴표 지원)
-  const rows=[]; let row=[], cur="", inQ=false;
-  for(let i=0;i<text.length;i++){
-    const ch=text[i], nxt=text[i+1];
-    if(inQ){
-      if(ch==='"' && nxt==='"'){ cur+='"'; i++; }
-      else if(ch==='"'){ inQ=false; }
-      else cur+=ch;
-    }else{
-      if(ch==='"'){ inQ=true; }
-      else if(ch===','){ row.push(cur); cur=""; }
-      else if(ch==='\\n'){ row.push(cur); rows.push(row); row=[]; cur=""; }
-      else if(ch==='\\r'){ /* skip */ }
-      else cur+=ch;
-    }
-  }
-  if(cur.length>0 || row.length>0){ row.push(cur); rows.push(row); }
-  return rows;
-}
-function detectColumns(headers){
-  const idx={};
-  const H=headers.map(keyify);
-  idx.teacher = (()=>{ const cand=["담당","담당선생","담당선생님","선생님","teacher","tch","담당자"]; for(let i=0;i<H.length;i++){ if(cand.includes(H[i])) return i;} return -1; })();
-  idx.name    = (()=>{ const cand=["학생이름","이름","name","student","학생","성명"]; for(let i=0;i<H.length;i++){ if(cand.includes(H[i])) return i;} return -1; })();
-  idx.parent  = (()=>{ const cand=["학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"]; for(let i=0;i<H.length;i++){ if(cand.includes(H[i])) return i;} return -1; })();
-  idx.student = (()=>{ const cand=["학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"]; for(let i=0;i<H.length;i++){ if(cand.includes(H[i])) return i;} return -1; })();
-  return idx;
-}
-function buildRoster(rows){
-  if(!rows.length) return {roster:{}, teachers:[]};
-  const headers = rows[0];
-  const idx = detectColumns(headers);
-  if(idx.teacher<0 || idx.name<0){
-    alert("CSV 헤더를 인식하지 못했습니다. 최소한 '담당선생'과 '학생이름' 열이 있어야 합니다.");
-    return {roster:{}, teachers:[]};
-  }
-  const roster={}, teachersSet=new Set();
-  for(let r=1;r<rows.length;r++){
-    const cols = rows[r]; if(!cols || cols.length<2) continue;
-    const teacher = String(cols[idx.teacher]||"").trim(); if(!teacher) continue;
-    const name    = String(cols[idx.name]||"").trim();    if(!name) continue;
-    const parent  = idx.parent>=0  ? onlyDigits(String(cols[idx.parent]||""))   : "";
-    const student = idx.student>=0 ? onlyDigits(String(cols[idx.student]||""))  : "";
-    const obj = { id: `${teacher}::${name}::${r}`, name, parentPhone: parent, studentPhone: student };
-    if(!roster[teacher]) roster[teacher]=[];
-    roster[teacher].append(obj);
-    teachersSet.add(teacher);
-  }
-  const teachers=[...teachersSet].sort((a,b)=>a.localeCompare(b,"ko"));
-  for(const t of teachers){ roster[t].sort((a,b)=>a.name.localeCompare(b.name,"ko")); }
-  return {roster, teachers};
-}
 
 function renderTeachers(){
   const box=$("#teacherBox"); box.innerHTML="";
-  if(!state.teacherList.length){ box.innerHTML='<span class="muted">선생님 데이터가 없습니다. CSV를 업로드하세요.</span>'; return; }
+  if(!state.teacherList.length){ box.innerHTML='<span class="muted">교사 데이터가 없습니다.</span>'; return; }
   state.teacherList.forEach(t=>{
     const b=document.createElement("button");
     b.className="pill"+(t===state.currentTeacher?" on":"");
-    const cnt = (state.roster[t]||[]).length;
-    b.innerHTML = `${t}<span class="badge">${cnt}</span>`;
+    const cnt=(state.roster[t]||[]).length;
+    b.innerHTML=`${t}<span class="badge">${cnt}</span>`;
     b.addEventListener("click",()=>{
-      state.currentTeacher = t;
-      localStorage.setItem(STORAGE_KEY_LAST, t);
-      renderTeachers();
-      renderStudents();
+      state.currentTeacher=t; localStorage.setItem(STORAGE_KEY_LAST,t);
+      renderTeachers(); renderStudents();
     });
     box.appendChild(b);
   });
 }
+
 function renderStudents(){
   const box=$("#studentBox"); box.innerHTML="";
   const list = (state.roster[state.currentTeacher]||[]);
   const q = ($("#search").value||"").trim();
-  state.filteredStudents = q ? list.filter(s=>s.name.includes(q)) : list;
-  if(!state.filteredStudents.length){
-    box.innerHTML='<span class="muted">학생이 없습니다.</span>';
-    state.currentStudent=null; updatePreview(); return;
-  }
-  state.filteredStudents.forEach(s=>{
+  const filtered = q ? list.filter(s=>s.name && s.name.includes(q)) : list;
+  if(!filtered.length){ box.innerHTML='<span class="muted">학생이 없습니다.</span>'; state.currentStudent=null; updatePreview(); return; }
+  filtered.forEach(s=>{
     const b=document.createElement("button");
-    b.className="pill"+(state.currentStudent && state.currentStudent.id===s.id ? " on":"");
-    const phone = norm(s.parentPhone) || norm(s.studentPhone) || "-";
+    b.className="pill"+(state.currentStudent&&state.currentStudent.id===s.id?" on":"");
+    const phone = norm(s.parentPhone)||norm(s.studentPhone)||"-";
     b.innerHTML = `${s.name}<span class="badge">${phone}</span>`;
     b.addEventListener("click",()=>{
-      state.currentStudent = s;
-      updatePreview();
-      if(!$("#text").value.trim()){
-        const t=TEMPLATES[0];
-        $("#text").value = t.text.replaceAll("{name}", s.name);
-        updatePreview();
-      }
+      state.currentStudent=s; updatePreview();
+      if(!$("#text").value.trim()){ $("#text").value=TEMPLATES[0].text.replaceAll("{name}", s.name||""); updatePreview(); }
       renderStudents();
     });
     box.appendChild(b);
   });
 }
 
-function saveRoster(){
-  const data = { roster: state.roster, teacherList: state.teacherList, currentTeacher: state.currentTeacher };
-  localStorage.setItem(STORAGE_KEY_ROSTER, JSON.stringify(data));
-  alert("저장 완료 (localStorage)");
-}
-function loadRoster(){
-  try{
-    const raw=localStorage.getItem(STORAGE_KEY_ROSTER);
-    if(!raw) { alert("저장된 데이터가 없습니다."); return; }
-    const data=JSON.parse(raw);
-    state.roster=data.roster||{};
-    state.teacherList=data.teacherList||Object.keys(state.roster);
-    state.currentTeacher=data.currentTeacher||state.teacherList[0]||"";
-    renderTeachers(); renderStudents(); updatePreview();
-  }catch(e){ alert("불러오기 실패: "+e); }
-}
-function clearRoster(){
-  localStorage.removeItem(STORAGE_KEY_ROSTER);
-  localStorage.removeItem(STORAGE_KEY_LAST);
-  alert("로컬 저장소를 초기화했습니다.");
+function updatePreview(){
+  const s=state.currentStudent;
+  $("#toPreview").textContent = computeTo()||"-";
+  const txt=$("#text").value||"";
+  $("#preview").textContent = (txt||"").replaceAll("{name}", s?.name||"");
 }
 
+function computeTo(){
+  if(state.toType==="custom") return norm($("#customTo").value||"");
+  const s=state.currentStudent; if(!s) return "";
+  if(state.toType==="parent")  return norm(s.parentPhone||"");
+  if(state.toType==="student") return norm(s.studentPhone||"");
+  return "";
+}
+
+// manual CSV override
 function hookCSV(){
-  $("#csv").addEventListener("change", (ev)=>{
-    const f = ev.target.files?.[0];
-    if(!f) return;
+  $("#csv").addEventListener("change",(ev)=>{
+    const f=ev.target.files?.[0]; if(!f) return;
     const fr=new FileReader();
-    fr.onload = ()=>{
-      const text=String(fr.result||"");
-      const rows=parseCSV(text);
+    fr.onload=()=>{ try{
+      const rows=parseCSV(String(fr.result||""));
       const built=buildRoster(rows);
-      state.roster=built.roster;
-      state.teacherList=built.teachers;
-      const last=localStorage.getItem(STORAGE_KEY_LAST);
-      state.currentTeacher = (last && state.roster[last]) ? last : (state.teacherList[0]||"");
+      state.roster=built.roster; state.teacherList=built.teachers;
+      state.currentTeacher=state.teacherList[0]||"";
+      $("#rosterInfo").textContent = `수동 CSV 업로드 완료 · 교사 ${state.teacherList.length}명`;
       renderTeachers(); renderStudents(); updatePreview();
-    };
+    }catch(e){ alert("CSV 파싱 실패: "+e); } };
     fr.readAsText(f,"utf-8");
   });
   $("#search").addEventListener("input", renderStudents);
-  $("#saveRoster").addEventListener("click", saveRoster);
-  $("#loadRoster").addEventListener("click", loadRoster);
-  $("#clearRoster").addEventListener("click", clearRoster);
 }
 
-// CSV utils
 function keyify(h){ return String(h||"").toLowerCase().replace(/\\s+/g,"").replace(/[^\\w가-힣]/g,""); }
 function parseCSV(text){
   const rows=[]; let row=[], cur="", inQ=false;
   for(let i=0;i<text.length;i++){
-    const ch=text[i], nxt=text[i+1];
-    if(inQ){
-      if(ch==='"' && nxt==='"'){ cur+='"'; i++; }
-      else if(ch==='"'){ inQ=false; }
-      else cur+=ch;
-    }else{
-      if(ch==='"'){ inQ=true; }
-      else if(ch===','){ row.push(cur); cur=""; }
-      else if(ch==='\\n'){ row.push(cur); rows.push(row); row=[]; cur=""; }
-      else if(ch==='\\r'){ /* skip */ }
-      else cur+=ch;
-    }
+    const ch=text[i], nx=text[i+1];
+    if(inQ){ if(ch=='"'&&nx=='"'){cur+='"';i++;} else if(ch=='"'){inQ=false;} else cur+=ch; }
+    else{ if(ch=='"'){inQ=true;} else if(ch===','){row.push(cur);cur="";} else if(ch==='\\n'){row.push(cur);rows.push(row);row=[];cur="";} else if(ch==='\\r'){ } else cur+=ch; }
   }
   if(cur.length>0 || row.length>0){ row.push(cur); rows.push(row); }
   return rows;
 }
 function detectColumns(headers){
-  const idx={};
   const H=headers.map(keyify);
   const find=(cands)=>{ for(let i=0;i<H.length;i++){ if(cands.includes(H[i])) return i; } return -1; };
-  idx.teacher = find(["담당","담당선생","담당선생님","선생님","teacher","tch","담당자"]);
-  idx.name    = find(["학생이름","이름","name","student","학생","성명"]);
-  idx.parent  = find(["학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"]);
-  idx.student = find(["학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"]);
-  return idx;
+  return {
+    teacher: find(["담당","담당선생","담당선생님","선생님","teacher","tch","담당자"]),
+    name   : find(["학생이름","이름","name","student","학생","성명"]),
+    parent : find(["학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"]),
+    student: find(["학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"]),
+  };
 }
 function buildRoster(rows){
   if(!rows.length) return {roster:{}, teachers:[]};
-  const headers = rows[0];
-  const idx = detectColumns(headers);
-  if(idx.teacher<0 || idx.name<0){
-    alert("CSV 헤더를 인식하지 못했습니다. 최소한 '담당선생'과 '학생이름' 열이 있어야 합니다.");
-    return {roster:{}, teachers:[]};
-  }
-  const roster={}, teachersSet=new Set();
+  const headers=rows[0]; const idx=detectColumns(headers);
+  if(idx.teacher<0 || idx.name<0) throw new Error("헤더 인식 실패(담당선생/학생이름 필요)");
+  const roster={}, ts=new Set();
   for(let r=1;r<rows.length;r++){
-    const cols = rows[r]; if(!cols || cols.length<2) continue;
-    const teacher = String(cols[idx.teacher]||"").trim(); if(!teacher) continue;
-    const name    = String(cols[idx.name]||"").trim();    if(!name) continue;
-    const parent  = idx.parent>=0  ? onlyDigits(String(cols[idx.parent]||""))   : "";
-    const student = idx.student>=0 ? onlyDigits(String(cols[idx.student]||""))  : "";
-    const obj = { id: `${teacher}::${name}::${r}`, name, parentPhone: parent, studentPhone: student };
-    if(!roster[teacher]) roster[teacher]=[];
-    roster[teacher].push(obj);
-    teachersSet.add(teacher);
+    const cols=rows[r]; if(!cols||cols.length<2) continue;
+    const teacher=String(cols[idx.teacher]||"").trim(); if(!teacher) continue;
+    const name   =String(cols[idx.name]||"").trim();    if(!name) continue;
+    const parent = idx.parent>=0 ? (cols[idx.parent]||"") : "";
+    const student= idx.student>=0? (cols[idx.student]||""): "";
+    const obj={id:`${teacher}::${name}::${r}`, name, parentPhone:onlyDigits(parent), studentPhone:onlyDigits(student)};
+    roster[teacher]=roster[teacher]||[]; roster[teacher].push(obj); ts.add(teacher);
   }
-  const teachers=[...teachersSet].sort((a,b)=>a.localeCompare(b,"ko"));
+  const teachers=[...ts].sort((a,b)=>a.localeCompare(b,"ko"));
   for(const t of teachers){ roster[t].sort((a,b)=>a.name.localeCompare(b.name,"ko")); }
   return {roster, teachers};
 }
+function onlyDigits(s){ return (s||"").replace(/\\D/g,""); }
 
-// 발송
 async function send(){
-  const token = ($("#token").value||"").trim();
-  const headers = { "Content-Type":"application/json" };
-  if(token) headers["Authorization"] = "Bearer "+token;
+  const token=($("#token").value||"").trim();
+  const headers={"Content-Type":"application/json"}; if(token) headers["Authorization"]="Bearer "+token;
 
-  const to   = onlyDigits(computeTo());
-  const from = onlyDigits(state.defaultFrom||"");
-  const s    = state.currentStudent;
-  const text = ($("#text").value||"").replaceAll("{name}", s?.name||"");
-  const dry  = $("#dry").checked;
+  const to=onlyDigits(computeTo());
+  const from=onlyDigits(state.defaultFrom||"");
+  const s=state.currentStudent;
+  const text=($("#text").value||"").replaceAll("{name}", s?.name||"");
+  const dry=$("#dry").checked;
 
-  $("#status").textContent = "전송 중...";
+  $("#status").textContent="전송 중...";
   if(!s){ alert("학생을 먼저 선택하세요."); $("#status").textContent=""; return; }
   if(!to){ alert("수신 번호가 비어있습니다."); $("#status").textContent=""; return; }
   if(!text.trim()){ alert("문자 내용을 입력하세요."); $("#status").textContent=""; return; }
 
-  const payload = { to, from, text, student: s.name, dry };
+  const payload={to,from,text,student:s.name,dry};
   try{
-    const r = await fetch("/api/sms", { method:"POST", headers, body: JSON.stringify(payload) });
-    const data = await r.json().catch(()=>({ok:false,status:r.status}));
-    $("#out").textContent = JSON.stringify(data, null, 2);
-    $("#status").textContent = r.ok ? (dry ? "드라이런 완료" : "전송 요청 완료") : "전송 실패";
-  }catch(e){
-    $("#out").textContent = String(e);
-    $("#status").textContent = "오류";
-  }
+    const r=await fetch("/api/sms",{method:"POST",headers,body:JSON.stringify(payload)});
+    const data=await r.json().catch(()=>({ok:false,status:r.status}));
+    $("#out").textContent=JSON.stringify(data,null,2);
+    $("#status").textContent=r.ok?(dry?"드라이런 완료":"전송 요청 완료"):"전송 실패";
+  }catch(e){ $("#out").textContent=String(e); $("#status").textContent="오류"; }
 }
 
 // init
@@ -596,9 +612,7 @@ async function send(){
   setupTemplates();
   setupToType();
   hookCSV();
-  const last=localStorage.getItem(STORAGE_KEY_LAST);
-  if(last) state.currentTeacher=last;
-  renderTeachers(); renderStudents(); updatePreview();
+  await autoLoadRoster();  // 기본: 서버에서 자동 로드 시도
   $("#text").addEventListener("input", updatePreview);
   $("#send").addEventListener("click", send);
 })();
