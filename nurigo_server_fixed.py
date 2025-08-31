@@ -123,6 +123,8 @@ WEB_UI_HTML = r"""<!doctype html>
 <title>서울더함수학학원 문자 전송 프로그램</title>
 <link rel="icon" href="/static/favicon-chat.svg" type="image/svg+xml">
 <meta name="theme-color" content="#2563eb">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#2563eb">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <link rel="apple-touch-icon" sizes="167x167" href="/static/apple-touch-icon-167.png">
 <link rel="apple-touch-icon" sizes="152x152" href="/static/apple-touch-icon-152.png">
@@ -194,6 +196,11 @@ h3{margin:0 0 8px 0;font-size:16px}
 #search{max-width:100%}
 </style>
 </head>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/static/sw.js').catch(console.warn);
+}
+</script>
 <body>
 <div class="wrap">
   <h2>서울더함수학학원 문자 전송 프로그램</h2>
