@@ -10,6 +10,9 @@ import base64
 app = Flask(__name__)
 CORS(app)
 
+print("== URL MAP ==")
+print(app.url_map)
+
 API_KEY = "NCSQ4IUXA7HZXKZP"
 API_SECRET = "Z32QAUC937DLGU82U92OUGUY75ZAIAGI"
 FROM_NUMBER = "01080348069"
