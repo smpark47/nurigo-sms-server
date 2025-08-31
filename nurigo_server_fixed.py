@@ -189,7 +189,7 @@ h3{margin:0 0 8px 0;font-size:16px}
 </head>
 <body>
 <div class="wrap">
-  <h2>문자 전송 프로그램</h2>
+  <h2>서울더함수학학원 문자 전송 프로그램</h2>
 
   <div class="card">
     <div class="controls">
