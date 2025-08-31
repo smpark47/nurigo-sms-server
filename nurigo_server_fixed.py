@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Nurigo/Solapi SMS proxy (Flask) - refined UI (send-row dry-run)
+Nurigo/Solapi SMS proxy (Flask) - refined UI (send-row dry-run, mobile fix)
 
 Endpoints
   GET  /                   -> health
@@ -24,7 +24,7 @@ from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)  # tighten allowed origins in production if needed
+CORS(app)
 
 DEFAULT_SENDER = os.getenv("DEFAULT_SENDER", "").strip()
 FORWARD_URL    = os.getenv("FORWARD_URL", "").strip()
@@ -52,7 +52,6 @@ def sms_config():
     return jsonify({"provider": current_provider(), "defaultFrom": DEFAULT_SENDER})
 
 def check_auth():
-    # Optional bearer gate
     if not AUTH_TOKEN:
         return True, None
     got = request.headers.get("Authorization", "")
@@ -107,7 +106,6 @@ def sms_send():
 
     if SOLAPI_KEY and SOLAPI_SECRET:
         try:
-            # HMAC-SHA256 auth header
             date_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             salt = secrets.token_hex(16)
             signature = hmac.new(
@@ -174,19 +172,21 @@ h3{margin:0 0 8px 0;font-size:16px}
 
 /* send-row: button + dry-run toggle */
 .actionbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-/* send-row: button + dry-run toggle */
-.actionbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.togglechip{
-  display:inline-flex;align-items:center;gap:6px;
+.actionbar > *{min-width:0}
+label.togglechip{
+  display:inline-flex !important;align-items:center;gap:6px;
   border:1px solid var(--b);border-radius:999px;
   padding:6px 10px;background:var(--white);
-  line-height:1;white-space:nowrap;flex:0 0 auto;  /* ← 줄바꿈 방지 & 칩 크기 고정 */
+  line-height:1;white-space:nowrap;flex:0 0 auto;flex-shrink:0;overflow:hidden
 }
-.togglechip input{transform:scale(1.05);margin:0}
-.togglechip span{display:inline-block;white-space:nowrap}       /* ← 텍스트 자체 줄바꿈 방지 */
+label.togglechip input{
+  margin:0; /* iOS에서 transform으로 경계 밖 튀어나오는 문제 방지 */
+  accent-color: var(--brand);
+}
+label.togglechip span{display:inline-block;white-space:nowrap}
 
 @media (max-width:480px){
-  .togglechip{padding:6px 8px}  /* ← 아주 좁은 화면에서 넘침 방지 */
+  label.togglechip{padding:6px 8px}
 }
 
 /* mobile safety */
@@ -266,8 +266,7 @@ h3{margin:0 0 8px 0;font-size:16px}
 </div>
 
 <script>
-// ===== 여기 ROSTER를 실제 데이터로 교체하세요 =====
-// 각 항목: { id: "선생님::학생", name:"학생이름", parentPhone:"010...", studentPhone:"010..." }
+// ===== 실제 ROSTER로 교체하세요 =====
 const ROSTER = {
   "최윤영": [
     {"id": "최윤영::기도윤", "name": "기도윤", "parentPhone": "01047612937", "studentPhone": "01057172937"},
@@ -390,12 +389,12 @@ const ROSTER = {
     {"id": "황재선::이채영", "name": "이채영", "parentPhone": "01035201122", "studentPhone": ""}
   ]
 };
-// ===============================================
+// ====================================
 
-// 요청: "박선민", "주말반쌤" 제외 (명단에 있어도 UI에서 보이지 않음)
+// 요청: "박선민", "주말반쌤" 제외
 ["박선민","주말반쌤"].forEach(k => { if (ROSTER[k]) delete ROSTER[k]; });
 
-// (성 빼고) 이름만 반환
+// (성 빼고) 이름만
 function givenName(full) {
   const s = String(full||"").trim();
   if (!s) return "";
@@ -404,7 +403,7 @@ function givenName(full) {
   return parts.length > 1 ? parts[parts.length-1] : s;
 }
 
-// 원클릭 4문구 (요청 문구)
+// 원클릭 4문구
 const TEMPLATES = [
   { label:"미등원 안내",  text:"안녕하세요. 서울더함수학학원입니다. {given} 아직 등원 하지 않았습니다." },
   { label:"조퇴 안내",   text:"서울더함수학학원입니다. {given} 아파서 오늘 조퇴하였습니다. 아이 상태 확인해주세요." },
@@ -479,7 +478,7 @@ function renderTeachers(){
   state.teacherList.forEach(t=>{
     const b=document.createElement("button");
     b.className="pill"+(t===state.currentTeacher?" on":"");
-    b.textContent = t; // 학생 수 배지 제거
+    b.textContent = t;
     b.addEventListener("click",()=>{
       state.currentTeacher=t;
       state.currentStudent=null;
@@ -502,7 +501,7 @@ function renderStudents(){
   filtered.forEach(s=>{
     const b=document.createElement("button");
     b.className="pill"+(state.currentStudent && state.currentStudent.id===s.id ? " on":"");
-    b.textContent = s.name; // 이름만
+    b.textContent = s.name;
     b.addEventListener("click",()=>{
       state.currentStudent=s;
       if(!$("#text").value.trim()){
@@ -560,7 +559,6 @@ async function send(){
   setupTemplates();
   setupToType();
 
-  // 선생님 목록 초기화 (자동 정렬 유지)
   state.teacherList = Object.keys(state.roster);
   state.currentTeacher = state.teacherList[0] || "";
   renderTeachers(); renderStudents(); updatePreview();
