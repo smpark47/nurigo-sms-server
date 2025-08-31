@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Nurigo/Solapi SMS proxy (Flask) - refined UI
+Nurigo/Solapi SMS proxy (Flask) - refined UI (send-row dry-run)
 
 Endpoints
   GET  /                   -> health
@@ -171,9 +171,17 @@ button.primary{background:var(--brand);color:var(--white);border-color:var(--bra
 .mt8{margin-top:8px}.mt12{margin-top:12px}.mt16{margin-top:16px}.mt24{margin-top:24px}
 pre{background:#0b1020;color:#c7d2fe;padding:12px;border-radius:10px;overflow:auto}
 h3{margin:0 0 8px 0;font-size:16px}
-/* dry-run toggle box */
-.togglebox{display:flex;align-items:center;gap:8px;border:1px solid var(--b);border-radius:10px;padding:8px 10px;background:var(--white)}
-.togglebox input{transform:scale(1.1)}
+
+/* send-row: button + dry-run toggle */
+.actionbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.togglechip{
+  display:inline-flex;align-items:center;gap:6px;
+  border:1px solid var(--b);border-radius:999px;
+  padding:6px 10px;background:var(--white)
+}
+.togglechip input{transform:scale(1.05);margin:0}
+
+/* mobile safety */
 #search{max-width:100%}
 </style>
 </head>
@@ -187,13 +195,6 @@ h3{margin:0 0 8px 0;font-size:16px}
         <label>발신번호 (서버 기본값)</label>
         <input id="fromNum" disabled>
         <div id="cfgInfo" class="muted mt8">서버 설정을 불러오는 중...</div>
-      </div>
-      <div class="col">
-        <label>드라이런(dry-run)</label>
-        <label class="togglebox">
-          <input type="checkbox" id="dry" />
-          <span class="muted">실제 발송 없이 요청/응답만 확인</span>
-        </label>
       </div>
       <div class="col">
         <label>검색(학생)</label>
@@ -240,8 +241,12 @@ h3{margin:0 0 8px 0;font-size:16px}
       <div class="muted mt8">미리보기: <span id="preview"></span></div>
     </div>
 
-    <div class="row mt16">
+    <div class="actionbar mt16">
       <button id="send" class="primary">전송</button>
+      <label class="togglechip">
+        <input type="checkbox" id="dry" />
+        <span class="muted">드라이런</span>
+      </label>
       <span id="status" class="muted"></span>
     </div>
 
@@ -254,6 +259,7 @@ h3{margin:0 0 8px 0;font-size:16px}
 
 <script>
 // ===== 여기 ROSTER를 실제 데이터로 교체하세요 =====
+// 각 항목: { id: "선생님::학생", name:"학생이름", parentPhone:"010...", studentPhone:"010..." }
 const ROSTER = {
   "최윤영": [
     {"id": "최윤영::기도윤", "name": "기도윤", "parentPhone": "01047612937", "studentPhone": "01057172937"},
@@ -378,7 +384,7 @@ const ROSTER = {
 };
 // ===============================================
 
-// 요청: "박선민", "주말반쌤" 제외
+// 요청: "박선민", "주말반쌤" 제외 (명단에 있어도 UI에서 보이지 않음)
 ["박선민","주말반쌤"].forEach(k => { if (ROSTER[k]) delete ROSTER[k]; });
 
 // (성 빼고) 이름만 반환
@@ -546,6 +552,7 @@ async function send(){
   setupTemplates();
   setupToType();
 
+  // 선생님 목록 초기화 (자동 정렬 유지)
   state.teacherList = Object.keys(state.roster);
   state.currentTeacher = state.teacherList[0] || "";
   renderTeachers(); renderStudents(); updatePreview();
