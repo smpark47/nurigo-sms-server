@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Nurigo/Solapi SMS proxy (Flask) - refined UI (send-row dry-run, mobile fix)
+Nurigo/Solapi SMS proxy (Flask) - refined UI (send-row dry-run, Safari fix)
 
 Endpoints
   GET  /                   -> health
@@ -173,20 +173,29 @@ h3{margin:0 0 8px 0;font-size:16px}
 /* send-row: button + dry-run toggle */
 .actionbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .actionbar > *{min-width:0}
-label.togglechip{
-  display:inline-flex !important;align-items:center;gap:6px;
+
+/* Safari-safe toggle chip (div + input + label[for]) */
+.togglechip{
+  display:flex;align-items:center;gap:6px;
   border:1px solid var(--b);border-radius:999px;
   padding:6px 10px;background:var(--white);
-  line-height:1;white-space:nowrap;flex:0 0 auto;flex-shrink:0;overflow:hidden
+  line-height:1;white-space:nowrap;
+  flex:0 0 auto;flex-shrink:0;
+  min-width:max-content; /* fit content width; wrap as a whole to next line */
+  word-break:keep-all;
 }
-label.togglechip input{
-  margin:0; /* iOS에서 transform으로 경계 밖 튀어나오는 문제 방지 */
+.togglechip input{
+  margin:0; /* avoid transform to prevent clipping on iOS */
   accent-color: var(--brand);
 }
-label.togglechip span{display:inline-block;white-space:nowrap}
+.chiplabel{
+  display:inline-block;white-space:nowrap;
+  color:var(--muted);
+}
 
-@media (max-width:480px){
-  label.togglechip{padding:6px 8px}
+/* iOS older fallback */
+@supports (-webkit-hyphens:none){
+  .togglechip{min-width:-webkit-max-content}
 }
 
 /* mobile safety */
@@ -251,10 +260,10 @@ label.togglechip span{display:inline-block;white-space:nowrap}
 
     <div class="actionbar mt16">
       <button id="send" class="primary">전송</button>
-      <label class="togglechip">
+      <div class="togglechip">
         <input type="checkbox" id="dry" />
-        <span class="muted">dry-run</span>
-      </label>
+        <label for="dry" class="chiplabel">dry-run</label>
+      </div>
       <span id="status" class="muted"></span>
     </div>
 
@@ -266,7 +275,6 @@ label.togglechip span{display:inline-block;white-space:nowrap}
 </div>
 
 <script>
-// ===== 실제 ROSTER로 교체하세요 =====
 const ROSTER = {
   "최윤영": [
     {"id": "최윤영::기도윤", "name": "기도윤", "parentPhone": "01047612937", "studentPhone": "01057172937"},
