@@ -174,12 +174,20 @@ h3{margin:0 0 8px 0;font-size:16px}
 
 /* send-row: button + dry-run toggle */
 .actionbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* send-row: button + dry-run toggle */
+.actionbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .togglechip{
   display:inline-flex;align-items:center;gap:6px;
   border:1px solid var(--b);border-radius:999px;
-  padding:6px 10px;background:var(--white)
+  padding:6px 10px;background:var(--white);
+  line-height:1;white-space:nowrap;flex:0 0 auto;  /* ← 줄바꿈 방지 & 칩 크기 고정 */
 }
 .togglechip input{transform:scale(1.05);margin:0}
+.togglechip span{display:inline-block;white-space:nowrap}       /* ← 텍스트 자체 줄바꿈 방지 */
+
+@media (max-width:480px){
+  .togglechip{padding:6px 8px}  /* ← 아주 좁은 화면에서 넘침 방지 */
+}
 
 /* mobile safety */
 #search{max-width:100%}
@@ -245,7 +253,7 @@ h3{margin:0 0 8px 0;font-size:16px}
       <button id="send" class="primary">전송</button>
       <label class="togglechip">
         <input type="checkbox" id="dry" />
-        <span class="muted">드라이런</span>
+        <span class="muted">dry-run</span>
       </label>
       <span id="status" class="muted"></span>
     </div>
