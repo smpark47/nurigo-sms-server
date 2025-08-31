@@ -1,7 +1,156 @@
-<!doctype html>
+# -*- coding: utf-8 -*-
+"""
+Nurigo/Solapi SMS proxy (Flask)
+
+Endpoints
+  GET  /                   -> health
+  GET  /routes             -> list routes (debug)
+  GET  /api/sms/config     -> {"provider": "...", "defaultFrom": "010..."}
+  POST /api/sms            -> {to, from, text, dry?}
+  GET  /ui                 -> simple web UI
+
+Env Vars
+  PORT            : bind port (Render sets this automatically)
+  DEFAULT_SENDER  : default "from" number (e.g., 01080348069)
+  SOLAPI_KEY      : Solapi API key (use if not forwarding)
+  SOLAPI_SECRET   : Solapi API secret
+  FORWARD_URL     : if set, forward JSON to this URL instead of calling Solapi
+  AUTH_TOKEN      : if set, require header "Authorization: Bearer <AUTH_TOKEN>"
+"""
+import os, json, hmac, hashlib, secrets, requests
+from datetime import datetime, timezone
+
+from flask import Flask, request, jsonify, Response
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app)  # tighten allowed origins in production
+
+DEFAULT_SENDER = os.getenv("DEFAULT_SENDER", "").strip()
+FORWARD_URL    = os.getenv("FORWARD_URL", "").strip()
+SOLAPI_KEY     = os.getenv("SOLAPI_KEY", "").strip()
+SOLAPI_SECRET  = os.getenv("SOLAPI_SECRET", "").strip()
+AUTH_TOKEN     = os.getenv("AUTH_TOKEN", "").strip()
+
+def current_provider() -> str:
+    if FORWARD_URL:
+        return "forward"
+    if SOLAPI_KEY and SOLAPI_SECRET:
+        return "solapi"
+    return "mock"
+
+@app.get("/")
+def root():
+    return {"ok": True, "service": "nurigo-sms-proxy", "provider": current_provider()}, 200
+
+@app.get("/routes")
+def routes():
+    return {"routes": [{"rule": r.rule, "methods": sorted(list(r.methods))} for r in app.url_map.iter_rules()]}
+
+@app.get("/api/sms/config")
+def sms_config():
+    return jsonify({"provider": current_provider(), "defaultFrom": DEFAULT_SENDER})
+
+def check_auth():
+    # Optional bearer gate to prevent open relay
+    if not AUTH_TOKEN:
+        return True, None
+    got = request.headers.get("Authorization", "")
+    if got.startswith("Bearer "):
+        token = got.split(" ", 1)[1].strip()
+        if token == AUTH_TOKEN:
+            return True, None
+    return False, (jsonify({"ok": False, "error": "unauthorized"}), 401)
+
+@app.post("/api/sms")
+def sms_send():
+    ok, err = check_auth()
+    if not ok:
+        return err
+
+    try:
+        payload = request.get_json(force=True) or {}
+    except Exception:
+        payload = {}
+
+    to       = str(payload.get("to", "")).strip()
+    from_num = str(payload.get("from", DEFAULT_SENDER)).strip() or DEFAULT_SENDER
+    text     = str(payload.get("text", "")).strip()
+    dry      = bool(payload.get("dry", False))
+
+    if not to or not text:
+        return jsonify({"ok": False, "error": "missing to/text"}), 400
+
+    # DRY-RUN: never forward or call Solapi when dry=True
+    if dry:
+        return jsonify({
+            "ok": True,
+            "provider": "mock",
+            "dry": True,
+            "echo": {"to": to, "from": from_num, "text": text, "len": len(text)},
+            "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        })
+
+    # 1) Forwarding to existing HTTP SMS service (only when not dry)
+    if FORWARD_URL:
+        try:
+            r = requests.post(
+                FORWARD_URL,
+                json={"to": to, "from": from_num, "text": text},
+                timeout=15,
+            )
+            return (
+                r.text,
+                r.status_code,
+                {"Content-Type": r.headers.get("Content-Type", "application/json")},
+            )
+        except Exception as e:
+            return jsonify({"ok": False, "error": "forward-failed", "detail": str(e)}), 502
+
+    # 2) Direct call to Solapi (HMAC-SHA256)
+    if SOLAPI_KEY and SOLAPI_SECRET:
+        try:
+            # Authorization: HMAC-SHA256 apiKey=<key>, date=<ISO8601Z>, salt=<hex>, signature=<hex>
+            date_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            salt = secrets.token_hex(16)  # random per request
+            signature = hmac.new(
+                SOLAPI_SECRET.encode("utf-8"),
+                (date_time + salt).encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+
+            auth_header = (
+                f"HMAC-SHA256 apiKey={SOLAPI_KEY}, date={date_time}, "
+                f"salt={salt}, signature={signature}"
+            )
+
+            r = requests.post(
+                "https://api.solapi.com/messages/v4/send",
+                headers={"Content-Type": "application/json", "Authorization": auth_header},
+                json={"message": {"to": to, "from": from_num, "text": text}},
+                timeout=15,
+            )
+            ctype = r.headers.get("Content-Type", "")
+            data = r.json() if ctype and "application/json" in ctype.lower() else {"raw": r.text}
+            out = {"ok": r.status_code < 300, "provider": "solapi", "response": data}
+            return (json.dumps(out, ensure_ascii=False), r.status_code, {"Content-Type": "application/json"})
+        except Exception as e:
+            return jsonify({"ok": False, "error": "solapi-failed", "detail": str(e)}), 502
+
+    # 3) Fallback mock when neither forwarding nor solapi creds are present
+    return jsonify({
+        "ok": True,
+        "provider": "mock",
+        "dry": True,
+        "echo": {"to": to, "from": from_num, "text": text, "len": len(text)},
+        "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    })
+
+# --- Simple Web UI (same origin) ---
+WEB_UI_HTML = r"""<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SMS 테스트 (웹 · 선생님/담당학생 빠른 발송)</title>
+<title>SMS 테스트 (웹: 선생님/담당학생 빠른 발송)</title>
 <style>
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR,Arial,sans-serif;background:#f8fafc;margin:0}
 .wrap{max-width:980px;margin:24px auto;padding:16px}
@@ -139,8 +288,8 @@ const teacherColKeys = ["담당","담당선생","담당선생님","선생님","t
 const nameColKeys    = ["학생이름","이름","name","student","학생","성명"];
 const parentColKeys  = ["학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"];
 const studentColKeys = ["학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"];
-const onlyDigits = s => (s||"").replace(/\D/g, "");
-const norm = s => { const d=onlyDigits(s); if(d.length===11) return d.replace(/(\d{3})(\d{4})(\d{4})/,"$1-$2-$3"); if(d.length===10) return d.replace(/(\d{2,3})(\d{3,4})(\d{4})/,"$1-$2-$3"); return s||""; };
+const onlyDigits = s => (s||"").replace(/\\D/g, "");
+const norm = s => { const d=onlyDigits(s); if(d.length===11) return d.replace(/(\\d{3})(\\d{4})(\\d{4})/,"$1-$2-$3"); if(d.length===10) return d.replace(/(\\d{2,3})(\\d{3,4})(\\d{4})/,"$1-$2-$3"); return s||""; };
 const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
 const state = {
@@ -210,7 +359,7 @@ function computeTo(){
   if(state.toType==="student") return norm(s.studentPhone||"");
   return "";
 }
-function keyify(h){ return String(h||"").toLowerCase().replace(/\s+/g,"").replace(/[^\w가-힣]/g,""); }
+function keyify(h){ return String(h||"").toLowerCase().replace(/\\s+/g,"").replace(/[^\\w가-힣]/g,""); }
 
 function parseCSV(text){
   // 간단 CSV 파서 (따옴표 지원)
@@ -224,8 +373,8 @@ function parseCSV(text){
     }else{
       if(ch==='"'){ inQ=true; }
       else if(ch===','){ row.push(cur); cur=""; }
-      else if(ch==='\n'){ row.push(cur); rows.push(row); row=[]; cur=""; }
-      else if(ch==='\r'){ /* skip */ }
+      else if(ch==='\\n'){ row.push(cur); rows.push(row); row=[]; cur=""; }
+      else if(ch==='\\r'){ /* skip */ }
       else cur+=ch;
     }
   }
@@ -235,12 +384,10 @@ function parseCSV(text){
 function detectColumns(headers){
   const idx={};
   const H=headers.map(keyify);
-  const find=(cands)=>{ for(let i=0;i<H.length;i++){ if(cands.includes(H[i])) return i; } return -1; };
-  idx.teacher = (()=>{ for(const k of teacherColKeys){ const i=H.indexOf(k); if(i>=0) return i; } return -1; })();
-  idx.name    = (()=>{ for(const k of nameColKeys){    const i=H.indexOf(k); if(i>=0) return i; } return -1; })();
-  // phone columns: try strict first, then fuzzy contains("부모","학부모"...)
-  idx.parent  = (()=>{ for(const k of parentColKeys){  const i=H.indexOf(k); if(i>=0) return i; } return -1; })();
-  idx.student = (()=>{ for(const k of studentColKeys){ const i=H.indexOf(k); if(i>=0) return i; } return -1; })();
+  idx.teacher = (()=>{ const cand=["담당","담당선생","담당선생님","선생님","teacher","tch","담당자"]; for(let i=0;i<H.length;i++){ if(cand.includes(H[i])) return i;} return -1; })();
+  idx.name    = (()=>{ const cand=["학생이름","이름","name","student","학생","성명"]; for(let i=0;i<H.length;i++){ if(cand.includes(H[i])) return i;} return -1; })();
+  idx.parent  = (()=>{ const cand=["학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"]; for(let i=0;i<H.length;i++){ if(cand.includes(H[i])) return i;} return -1; })();
+  idx.student = (()=>{ const cand=["학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"]; for(let i=0;i<H.length;i++){ if(cand.includes(H[i])) return i;} return -1; })();
   return idx;
 }
 function buildRoster(rows){
@@ -260,11 +407,10 @@ function buildRoster(rows){
     const student = idx.student>=0 ? onlyDigits(String(cols[idx.student]||""))  : "";
     const obj = { id: `${teacher}::${name}::${r}`, name, parentPhone: parent, studentPhone: student };
     if(!roster[teacher]) roster[teacher]=[];
-    roster[teacher].push(obj);
+    roster[teacher].append(obj);
     teachersSet.add(teacher);
   }
   const teachers=[...teachersSet].sort((a,b)=>a.localeCompare(b,"ko"));
-  // 정렬: 학생 이름도 오름차순
   for(const t of teachers){ roster[t].sort((a,b)=>a.name.localeCompare(b.name,"ko")); }
   return {roster, teachers};
 }
@@ -303,7 +449,6 @@ function renderStudents(){
     b.addEventListener("click",()=>{
       state.currentStudent = s;
       updatePreview();
-      // 문구 미작성 시, 기본 템플릿(미등원) 자동 프리필
       if(!$("#text").value.trim()){
         const t=TEMPLATES[0];
         $("#text").value = t.text.replaceAll("{name}", s.name);
@@ -348,7 +493,6 @@ function hookCSV(){
       const built=buildRoster(rows);
       state.roster=built.roster;
       state.teacherList=built.teachers;
-      // 마지막 교사 복원 시도
       const last=localStorage.getItem(STORAGE_KEY_LAST);
       state.currentTeacher = (last && state.roster[last]) ? last : (state.teacherList[0]||"");
       renderTeachers(); renderStudents(); updatePreview();
@@ -359,6 +503,62 @@ function hookCSV(){
   $("#saveRoster").addEventListener("click", saveRoster);
   $("#loadRoster").addEventListener("click", loadRoster);
   $("#clearRoster").addEventListener("click", clearRoster);
+}
+
+// CSV utils
+function keyify(h){ return String(h||"").toLowerCase().replace(/\\s+/g,"").replace(/[^\\w가-힣]/g,""); }
+function parseCSV(text){
+  const rows=[]; let row=[], cur="", inQ=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i], nxt=text[i+1];
+    if(inQ){
+      if(ch==='"' && nxt==='"'){ cur+='"'; i++; }
+      else if(ch==='"'){ inQ=false; }
+      else cur+=ch;
+    }else{
+      if(ch==='"'){ inQ=true; }
+      else if(ch===','){ row.push(cur); cur=""; }
+      else if(ch==='\\n'){ row.push(cur); rows.push(row); row=[]; cur=""; }
+      else if(ch==='\\r'){ /* skip */ }
+      else cur+=ch;
+    }
+  }
+  if(cur.length>0 || row.length>0){ row.push(cur); rows.push(row); }
+  return rows;
+}
+function detectColumns(headers){
+  const idx={};
+  const H=headers.map(keyify);
+  const find=(cands)=>{ for(let i=0;i<H.length;i++){ if(cands.includes(H[i])) return i; } return -1; };
+  idx.teacher = find(["담당","담당선생","담당선생님","선생님","teacher","tch","담당자"]);
+  idx.name    = find(["학생이름","이름","name","student","학생","성명"]);
+  idx.parent  = find(["학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"]);
+  idx.student = find(["학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"]);
+  return idx;
+}
+function buildRoster(rows){
+  if(!rows.length) return {roster:{}, teachers:[]};
+  const headers = rows[0];
+  const idx = detectColumns(headers);
+  if(idx.teacher<0 || idx.name<0){
+    alert("CSV 헤더를 인식하지 못했습니다. 최소한 '담당선생'과 '학생이름' 열이 있어야 합니다.");
+    return {roster:{}, teachers:[]};
+  }
+  const roster={}, teachersSet=new Set();
+  for(let r=1;r<rows.length;r++){
+    const cols = rows[r]; if(!cols || cols.length<2) continue;
+    const teacher = String(cols[idx.teacher]||"").trim(); if(!teacher) continue;
+    const name    = String(cols[idx.name]||"").trim();    if(!name) continue;
+    const parent  = idx.parent>=0  ? onlyDigits(String(cols[idx.parent]||""))   : "";
+    const student = idx.student>=0 ? onlyDigits(String(cols[idx.student]||""))  : "";
+    const obj = { id: `${teacher}::${name}::${r}`, name, parentPhone: parent, studentPhone: student };
+    if(!roster[teacher]) roster[teacher]=[];
+    roster[teacher].push(obj);
+    teachersSet.add(teacher);
+  }
+  const teachers=[...teachersSet].sort((a,b)=>a.localeCompare(b,"ko"));
+  for(const t of teachers){ roster[t].sort((a,b)=>a.name.localeCompare(b.name,"ko")); }
+  return {roster, teachers};
 }
 
 // 발송
@@ -396,7 +596,6 @@ async function send(){
   setupTemplates();
   setupToType();
   hookCSV();
-  // 마지막 교사명 복원 시도
   const last=localStorage.getItem(STORAGE_KEY_LAST);
   if(last) state.currentTeacher=last;
   renderTeachers(); renderStudents(); updatePreview();
@@ -405,3 +604,18 @@ async function send(){
 })();
 </script>
 </body></html>
+"""
+
+@app.get("/ui")
+def ui():
+    return Response(WEB_UI_HTML, mimetype="text/html; charset=utf-8")
+
+@app.get("/favicon.ico")
+def _favicon():
+    return ("", 204)
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "10000"))
+    print("== URL MAP ==")
+    print(app.url_map)
+    app.run(host="0.0.0.0", port=port, debug=False)
