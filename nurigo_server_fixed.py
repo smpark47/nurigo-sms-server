@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Nurigo/Solapi SMS proxy (Flask) - refined UI
+Nurigo/Solapi SMS proxy (Flask) - minimal dry-run with Safari/mobile fixes
 
 Endpoints
   GET  /                   -> health
@@ -19,12 +19,11 @@ Env Vars
 """
 import os, json, hmac, hashlib, secrets, requests
 from datetime import datetime, timezone
-
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)  # tighten allowed origins in production if needed
+CORS(app)
 
 DEFAULT_SENDER = os.getenv("DEFAULT_SENDER", "").strip()
 FORWARD_URL    = os.getenv("FORWARD_URL", "").strip()
@@ -52,7 +51,6 @@ def sms_config():
     return jsonify({"provider": current_provider(), "defaultFrom": DEFAULT_SENDER})
 
 def check_auth():
-    # Optional bearer gate
     if not AUTH_TOKEN:
         return True, None
     got = request.headers.get("Authorization", "")
@@ -65,14 +63,11 @@ def check_auth():
 @app.post("/api/sms")
 def sms_send():
     ok, err = check_auth()
-    if not ok:
-        return err
-
+    if not ok: return err
     try:
         payload = request.get_json(force=True) or {}
     except Exception:
         payload = {}
-
     to       = str(payload.get("to", "")).strip()
     from_num = str(payload.get("from", DEFAULT_SENDER)).strip() or DEFAULT_SENDER
     text     = str(payload.get("text", "")).strip()
@@ -83,44 +78,24 @@ def sms_send():
 
     if dry:
         return jsonify({
-            "ok": True,
-            "provider": "mock",
-            "dry": True,
+            "ok": True, "provider": "mock", "dry": True,
             "echo": {"to": to, "from": from_num, "text": text, "len": len(text)},
             "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         })
 
     if FORWARD_URL:
         try:
-            r = requests.post(
-                FORWARD_URL,
-                json={"to": to, "from": from_num, "text": text},
-                timeout=15,
-            )
-            return (
-                r.text,
-                r.status_code,
-                {"Content-Type": r.headers.get("Content-Type", "application/json")},
-            )
+            r = requests.post(FORWARD_URL, json={"to": to, "from": from_num, "text": text}, timeout=15)
+            return (r.text, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
         except Exception as e:
             return jsonify({"ok": False, "error": "forward-failed", "detail": str(e)}), 502
 
     if SOLAPI_KEY and SOLAPI_SECRET:
         try:
-            # HMAC-SHA256 auth header
             date_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             salt = secrets.token_hex(16)
-            signature = hmac.new(
-                SOLAPI_SECRET.encode("utf-8"),
-                (date_time + salt).encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()
-
-            auth_header = (
-                f"HMAC-SHA256 apiKey={SOLAPI_KEY}, date={date_time}, "
-                f"salt={salt}, signature={signature}"
-            )
-
+            signature = hmac.new(SOLAPI_SECRET.encode("utf-8"), (date_time + salt).encode("utf-8"), hashlib.sha256).hexdigest()
+            auth_header = f"HMAC-SHA256 apiKey={SOLAPI_KEY}, date={date_time}, salt={salt}, signature={signature}"
             r = requests.post(
                 "https://api.solapi.com/messages/v4/send",
                 headers={"Content-Type": "application/json", "Authorization": auth_header},
@@ -135,9 +110,7 @@ def sms_send():
             return jsonify({"ok": False, "error": "solapi-failed", "detail": str(e)}), 502
 
     return jsonify({
-        "ok": True,
-        "provider": "mock",
-        "dry": True,
+        "ok": True, "provider": "mock", "dry": True,
         "echo": {"to": to, "from": from_num, "text": text, "len": len(text)},
         "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     })
@@ -171,9 +144,46 @@ button.primary{background:var(--brand);color:var(--white);border-color:var(--bra
 .mt8{margin-top:8px}.mt12{margin-top:12px}.mt16{margin-top:16px}.mt24{margin-top:24px}
 pre{background:#0b1020;color:#c7d2fe;padding:12px;border-radius:10px;overflow:auto}
 h3{margin:0 0 8px 0;font-size:16px}
-/* dry-run toggle box */
-.togglebox{display:flex;align-items:center;gap:8px;border:1px solid var(--b);border-radius:10px;padding:8px 10px;background:var(--white)}
-.togglebox input{transform:scale(1.1)}
+
+/* send-row layout */
+.actionbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+/* ✅ Safari gap issue: remove gap inside inlinecheck and use precise margin */
+.inlinecheck{
+  display:inline-flex;
+  align-items:center;
+  white-space:nowrap;   /* keep "dry-run" on one line */
+  line-height:1.1;
+}
+.inlinecheck input{
+  margin:0;             /* reset Safari default spacing */
+  appearance:auto;
+  -webkit-appearance:checkbox;
+  width:16px;height:16px;
+  vertical-align:middle;
+}
+.inlinecheck span{
+  display:inline-block;
+  margin-left:4px;      /* exact spacing between checkbox and label */
+}
+
+/* ✅ status text doesn't overlap; responsive placement */
+.status{
+  margin-left:auto;
+  white-space:nowrap;   /* desktop keep one line */
+}
+@media (max-width:600px){
+  .status{
+    order:3;
+    flex-basis:100%;    /* force to next line on small screens */
+    margin-left:0;
+    white-space:normal; /* allow wrap on mobile */
+  }
+  #send{ order:1; }
+  .inlinecheck{ order:2; }
+}
+
+/* mobile safety */
 #search{max-width:100%}
 </style>
 </head>
@@ -187,13 +197,6 @@ h3{margin:0 0 8px 0;font-size:16px}
         <label>발신번호 (서버 기본값)</label>
         <input id="fromNum" disabled>
         <div id="cfgInfo" class="muted mt8">서버 설정을 불러오는 중...</div>
-      </div>
-      <div class="col">
-        <label>드라이런(dry-run)</label>
-        <label class="togglebox">
-          <input type="checkbox" id="dry" />
-          <span class="muted">실제 발송 없이 요청/응답만 확인</span>
-        </label>
       </div>
       <div class="col">
         <label>검색(학생)</label>
@@ -240,9 +243,14 @@ h3{margin:0 0 8px 0;font-size:16px}
       <div class="muted mt8">미리보기: <span id="preview"></span></div>
     </div>
 
-    <div class="row mt16">
+    <!-- Send row: button + (checkbox + text only) -->
+    <div class="actionbar mt16">
       <button id="send" class="primary">전송</button>
-      <span id="status" class="muted"></span>
+      <label for="dry" class="inlinecheck">
+        <input type="checkbox" id="dry" />
+        <span class="muted">dry-run</span>
+      </label>
+      <span id="status" class="muted status"></span>
     </div>
 
     <div class="mt12">
@@ -253,7 +261,7 @@ h3{margin:0 0 8px 0;font-size:16px}
 </div>
 
 <script>
-// ===== 여기 ROSTER를 실제 데이터로 교체하세요 =====
+// ===== ROSTER: from roster.csv (박선민/주말반쌤 제외) =====
 const ROSTER = {
   "최윤영": [
     {"id": "최윤영::기도윤", "name": "기도윤", "parentPhone": "01047612937", "studentPhone": "01057172937"},
@@ -376,12 +384,9 @@ const ROSTER = {
     {"id": "황재선::이채영", "name": "이채영", "parentPhone": "01035201122", "studentPhone": ""}
   ]
 };
-// ===============================================
-
-// 요청: "박선민", "주말반쌤" 제외
+// ===== helper functions =====
 ["박선민","주말반쌤"].forEach(k => { if (ROSTER[k]) delete ROSTER[k]; });
 
-// (성 빼고) 이름만 반환
 function givenName(full) {
   const s = String(full||"").trim();
   if (!s) return "";
@@ -390,7 +395,6 @@ function givenName(full) {
   return parts.length > 1 ? parts[parts.length-1] : s;
 }
 
-// 원클릭 4문구 (요청 문구)
 const TEMPLATES = [
   { label:"미등원 안내",  text:"안녕하세요. 서울더함수학학원입니다. {given} 아직 등원 하지 않았습니다." },
   { label:"조퇴 안내",   text:"서울더함수학학원입니다. {given} 아파서 오늘 조퇴하였습니다. 아이 상태 확인해주세요." },
@@ -465,7 +469,7 @@ function renderTeachers(){
   state.teacherList.forEach(t=>{
     const b=document.createElement("button");
     b.className="pill"+(t===state.currentTeacher?" on":"");
-    b.textContent = t; // 학생 수 배지 제거
+    b.textContent = t;
     b.addEventListener("click",()=>{
       state.currentTeacher=t;
       state.currentStudent=null;
@@ -488,7 +492,7 @@ function renderStudents(){
   filtered.forEach(s=>{
     const b=document.createElement("button");
     b.className="pill"+(state.currentStudent && state.currentStudent.id===s.id ? " on":"");
-    b.textContent = s.name; // 이름만
+    b.textContent = s.name;
     b.addEventListener("click",()=>{
       state.currentStudent=s;
       if(!$("#text").value.trim()){
