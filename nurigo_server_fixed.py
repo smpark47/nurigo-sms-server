@@ -123,7 +123,10 @@ WEB_UI_HTML = r"""<!doctype html>
 <title>서울더함수학학원 문자 전송 프로그램</title>
 <link rel="icon" href="/static/favicon-chat.svg" type="image/svg+xml">
 <meta name="theme-color" content="#2563eb">
-<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+<link rel="apple-touch-icon" sizes="167x167" href="/static/apple-touch-icon-167.png">
+<link rel="apple-touch-icon" sizes="152x152" href="/static/apple-touch-icon-152.png">
+<link rel="apple-touch-icon" sizes="120x120" href="/static/apple-touch-icon-120.png">
 <style>
 :root{--b:#cbd5e1;--text:#334155;--muted:#64748b;--bg:#f8fafc;--white:#fff;--brand:#2563eb;--accent:#0ea5e9}
 *{box-sizing:border-box}
