@@ -7,30 +7,23 @@ Endpoints
   GET  /routes             -> list routes (debug)
   GET  /api/sms/config     -> {"provider": "...", "defaultFrom": "010..."}
   POST /api/sms            -> {to, from, text, dry?}
-  GET  /api/roster         -> {ok, teachers, roster}  # CSV/JSON에서 담당 매핑 자동 로드
   GET  /ui                 -> simple web UI
 
 Env Vars
-  PORT             : bind port (Render sets this automatically)
-  DEFAULT_SENDER   : default "from" number (e.g., 01080348069)
-  SOLAPI_KEY       : Solapi API key (use if not forwarding)
-  SOLAPI_SECRET    : Solapi API secret
-  FORWARD_URL      : if set, forward JSON to this URL instead of calling Solapi
-  AUTH_TOKEN       : if set, require header "Authorization: Bearer <AUTH_TOKEN>"
-
-  # Roster auto-loading (아래 우선순위대로 사용)
-  ROSTER_JSON      : JSON 문자열 ({"teachers":[...], "roster":{teacher:[...]}})
-  ROSTER_CSV       : CSV 전체 텍스트
-  ROSTER_URL       : CSV/JSON의 공개 URL (예: https://.../static/roster.csv)
-  static/roster.csv: 리포 내 정적 파일이 존재하면 이를 사용
+  PORT            : bind port (Render sets this automatically)
+  DEFAULT_SENDER  : default "from" number (e.g., 01080348069)
+  SOLAPI_KEY      : Solapi API key (use if not forwarding)
+  SOLAPI_SECRET   : Solapi API secret
+  FORWARD_URL     : if set, forward JSON to this URL instead of calling Solapi
+  AUTH_TOKEN      : if set, require header "Authorization: Bearer <AUTH_TOKEN>"
 """
-import os, io, json, hmac, hashlib, secrets, requests, csv
+import os, json, hmac, hashlib, secrets, requests
 from datetime import datetime, timezone
 
-from flask import Flask, request, jsonify, Response, send_from_directory
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
-app = Flask(__name__, static_folder="static")
+app = Flask(__name__)
 CORS(app)  # tighten allowed origins in production
 
 DEFAULT_SENDER = os.getenv("DEFAULT_SENDER", "").strip()
@@ -39,131 +32,12 @@ SOLAPI_KEY     = os.getenv("SOLAPI_KEY", "").strip()
 SOLAPI_SECRET  = os.getenv("SOLAPI_SECRET", "").strip()
 AUTH_TOKEN     = os.getenv("AUTH_TOKEN", "").strip()
 
-ROSTER_JSON    = os.getenv("ROSTER_JSON", "")
-ROSTER_CSV     = os.getenv("ROSTER_CSV", "")
-ROSTER_URL     = os.getenv("ROSTER_URL", "").strip()
-
-# --- helpers -----------------------------------------------------------------
-
 def current_provider() -> str:
     if FORWARD_URL:
         return "forward"
     if SOLAPI_KEY and SOLAPI_SECRET:
         return "solapi"
     return "mock"
-
-def _keyify(s: str) -> str:
-    return "".join(ch for ch in s.strip().lower() if ch.isalnum() or '\uac00' <= ch <= '\ud7a3')
-
-TEACHER_KEYS = {"담당","담당선생","담당선생님","선생님","teacher","tch","담당자"}
-NAME_KEYS    = {"학생이름","이름","name","student","학생","성명"}
-PARENT_KEYS  = {"학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"}
-STUDENT_KEYS = {"학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"}
-
-def _detect_indices(headers):
-    H = [_keyify(h) for h in headers]
-    def find(cands):
-        for i, h in enumerate(H):
-            if h in cands:
-                return i
-        return -1
-    idx = {
-        "teacher": find({ _keyify(x) for x in TEACHER_KEYS }),
-        "name":    find({ _keyify(x) for x in NAME_KEYS }),
-        "parent":  find({ _keyify(x) for x in PARENT_KEYS }),
-        "student": find({ _keyify(x) for x in STUDENT_KEYS }),
-    }
-    return idx
-
-def _only_digits(s): return "".join(ch for ch in (s or "") if ch.isdigit())
-
-def _build_roster_from_csv_text(text: str):
-    # 파서: utf-8-sig 안전, 따옴표/콤마 처리
-    f = io.StringIO(text.replace("\r\n","\n").replace("\r","\n"))
-    reader = csv.reader(f)
-    rows = list(reader)
-    if not rows:
-        return {"ok": False, "error": "empty-csv"}
-
-    headers = rows[0]
-    idx = _detect_indices(headers)
-    if idx["teacher"] < 0 or idx["name"] < 0:
-        return {"ok": False, "error": "header-missing"}
-
-    roster = {}
-    teachers_set = set()
-    for r in rows[1:]:
-        if not r or len(r) < 2: 
-            continue
-        teacher = (r[idx["teacher"]] if idx["teacher"]>=0 and idx["teacher"]<len(r) else "").strip()
-        name    = (r[idx["name"]]    if idx["name"]>=0    and idx["name"]<len(r) else "").strip()
-        if not teacher or not name:
-            continue
-        parent  = _only_digits(r[idx["parent"]])  if idx["parent"] >=0 and idx["parent"] < len(r) else ""
-        student = _only_digits(r[idx["student"]]) if idx["student"]>=0 and idx["student"]<len(r) else ""
-        obj = {"id": f"{teacher}::{name}", "name": name, "parentPhone": parent, "studentPhone": student}
-        roster.setdefault(teacher, []).append(obj)
-        teachers_set.add(teacher)
-
-    teachers = sorted(teachers_set, key=lambda x: x)
-    for t in teachers:
-        roster[t].sort(key=lambda s: s["name"])
-    return {"ok": True, "teachers": teachers, "roster": roster}
-
-def _load_roster():
-    # 1) JSON env
-    if ROSTER_JSON:
-        try:
-            data = json.loads(ROSTER_JSON)
-            if "teachers" in data and "roster" in data:
-                return {"ok": True, "teachers": data["teachers"], "roster": data["roster"], "source": "env-json"}
-        except Exception:
-            pass
-
-    # 2) CSV env
-    if ROSTER_CSV:
-        out = _build_roster_from_csv_text(ROSTER_CSV)
-        if out.get("ok"):
-            out["source"] = "env-csv"
-            return out
-
-    # 3) URL (CSV or JSON)
-    if ROSTER_URL:
-        try:
-            r = requests.get(ROSTER_URL, timeout=15)
-            ctype = (r.headers.get("Content-Type","") or "").lower()
-            txt = r.text
-            if "json" in ctype:
-                data = r.json()
-                if "teachers" in data and "roster" in data:
-                    return {"ok": True, "teachers": data["teachers"], "roster": data["roster"], "source": "url-json"}
-            # assume CSV otherwise
-            # strip UTF-8 BOM if any
-            if txt and txt[:1] == "\ufeff":
-                txt = txt[1:]
-            out = _build_roster_from_csv_text(txt)
-            if out.get("ok"):
-                out["source"] = "url-csv"
-                return out
-        except Exception as e:
-            return {"ok": False, "error": f"url-fetch-failed: {e}"}
-
-    # 4) static/roster.csv in repo
-    local_static = os.path.join(app.static_folder, "roster.csv")
-    if os.path.exists(local_static):
-        try:
-            with open(local_static, "r", encoding="utf-8-sig") as f:
-                txt = f.read()
-            out = _build_roster_from_csv_text(txt)
-            if out.get("ok"):
-                out["source"] = "static-csv"
-                return out
-        except Exception as e:
-            return {"ok": False, "error": f"static-read-failed: {e}"}
-
-    return {"ok": False, "error": "roster-not-configured"}
-
-# --- routes ------------------------------------------------------------------
 
 @app.get("/")
 def root():
@@ -176,12 +50,6 @@ def routes():
 @app.get("/api/sms/config")
 def sms_config():
     return jsonify({"provider": current_provider(), "defaultFrom": DEFAULT_SENDER})
-
-@app.get("/api/roster")
-def api_roster():
-    data = _load_roster()
-    status = 200 if data.get("ok") else 404
-    return jsonify(data), status
 
 def check_auth():
     # Optional bearer gate to prevent open relay
@@ -282,12 +150,12 @@ def sms_send():
 WEB_UI_HTML = r"""<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SMS 웹 발송 · 선생님/담당학생 자동 로딩</title>
+<title>문자 전송 프로그램</title>
 <style>
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Noto Sans KR,Arial,sans-serif;background:#f8fafc;margin:0}
 .wrap{max-width:980px;margin:24px auto;padding:16px}
 .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-.row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 .col{flex:1 1 260px;min-width:260px}
 label{display:block;font-size:12px;color:#334155;margin-bottom:6px}
 input,select,textarea{width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px}
@@ -309,21 +177,14 @@ h3{margin:0 0 8px 0;font-size:16px}
 </head>
 <body>
 <div class="wrap">
-  <h2>문자 발송(웹) · 선생님/담당학생 자동 로딩</h2>
-  <p class="muted">서버의 <code>/api/roster</code>에서 교사/학생 목록을 자동 불러옵니다. 필요 시 CSV 업로드로 덮어쓸 수 있어요.</p>
+  <h2>문자 전송 프로그램</h2>
 
-  <!-- 서버/보안/설정 -->
   <div class="card">
     <div class="row">
       <div class="col">
-        <label>서버 설정</label>
+        <label>발신번호 (서버 기본값)</label>
         <input id="fromNum" disabled>
-        <div id="cfgInfo" class="muted mt8">서버 설정 로딩 중...</div>
-      </div>
-      <div class="col">
-        <label>보안 토큰 (선택)</label>
-        <input id="token" placeholder="AUTH_TOKEN 사용 시 입력 (예: mytoken)">
-        <div class="muted mt8">서버에 AUTH_TOKEN이 설정되었다면 발송 시 Authorization 헤더를 첨부합니다.</div>
+        <div id="cfgInfo" class="muted mt8">서버 설정을 불러오는 중...</div>
       </div>
       <div class="col">
         <label>드라이런(dry-run)</label>
@@ -332,40 +193,26 @@ h3{margin:0 0 8px 0;font-size:16px}
           <span class="muted">체크 시 실제 발송 없이 요청/응답만 확인</span>
         </div>
       </div>
-    </div>
-  </div>
-
-  <!-- 자동 로스터 + 수동 CSV -->
-  <div class="card mt16">
-    <h3>1) 선생님/담당학생</h3>
-    <div class="row">
-      <div class="col">
-        <label>자동 로드 상태</label>
-        <div id="rosterInfo" class="muted">/api/roster 호출 대기 중...</div>
-      </div>
-      <div class="col">
-        <label>수동 CSV 업로드(덮어쓰기)</label>
-        <input type="file" id="csv" accept=".csv,text/csv">
-        <div class="muted mt8">헤더 예시: <b>담당선생</b>, <b>학생이름</b>, <b>학부모전화</b>, <b>학생전화</b></div>
-      </div>
       <div class="col">
         <label>검색(학생)</label>
         <input id="search" placeholder="이름 일부로 필터링">
       </div>
     </div>
+  </div>
 
-    <div class="mt12">
-      <label>선생님 선택</label>
+  <div class="card mt16">
+    <h3>1) 선생님 → 담당학생 선택</h3>
+    <div class="mt8">
+      <label>선생님</label>
       <div id="teacherBox" class="grid teachers"></div>
     </div>
     <div class="mt12">
       <label>담당 학생</label>
       <div id="studentBox" class="grid students"></div>
-      <div class="muted mt8">학생 버튼 클릭 → 수신번호 자동 선택</div>
+      <div class="muted mt8">학생 버튼 클릭 시 수신번호가 자동 선택됩니다.</div>
     </div>
   </div>
 
-  <!-- 수신대상/문구/발송 -->
   <div class="card mt16">
     <h3>2) 문구 선택 → 발송</h3>
     <div class="row">
@@ -384,15 +231,18 @@ h3{margin:0 0 8px 0;font-size:16px}
         <div class="templates" id="tpls"></div>
       </div>
     </div>
+
     <div class="mt12">
       <label>문자 내용</label>
-      <textarea id="text" placeholder="{name} 자리표시자는 학생 이름으로 치환됩니다."></textarea>
+      <textarea id="text" placeholder="{given} 자리는 (성 빼고) 이름으로 치환됩니다."></textarea>
       <div class="muted mt8">미리보기: <span id="preview"></span></div>
     </div>
+
     <div class="row mt16">
       <button id="send" class="primary">전송</button>
       <span id="status" class="muted"></span>
     </div>
+
     <div class="mt12">
       <label>결과</label>
       <pre id="out">(아직 없음)</pre>
@@ -401,58 +251,1003 @@ h3{margin:0 0 8px 0;font-size:16px}
 </div>
 
 <script>
-const STORAGE_KEY_LAST   = "sms_ui_last_teacher_v1";
+// === 하드코딩 ROSTER (CSV에서 추출) ===
+const ROSTER = {
+  "최윤영": [
+    {
+      "id": "최윤영::기도윤::0",
+      "name": "기도윤",
+      "parentPhone": "01047612937",
+      "studentPhone": "01057172937"
+    },
+    {
+      "id": "최윤영::황세빈::3",
+      "name": "황세빈",
+      "parentPhone": "01029340929",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::최시원::41",
+      "name": "최시원",
+      "parentPhone": "01091925924",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::이동현::42",
+      "name": "이동현",
+      "parentPhone": "01095905486",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::이소영::45",
+      "name": "이소영",
+      "parentPhone": "01080253405",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::최현서::50",
+      "name": "최현서",
+      "parentPhone": "01026618590",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::신유나::53",
+      "name": "신유나",
+      "parentPhone": "01099245907",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::신유찬::54",
+      "name": "신유찬",
+      "parentPhone": "01099245907",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::정준영::55",
+      "name": "정준영",
+      "parentPhone": "01087429022",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::노유종::56",
+      "name": "노유종",
+      "parentPhone": "01047626707",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::정다율::63",
+      "name": "정다율",
+      "parentPhone": "01050531629",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::조정운::67",
+      "name": "조정운",
+      "parentPhone": "01074321567",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::최성현::74",
+      "name": "최성현",
+      "parentPhone": "01037465003",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::유하엘::75",
+      "name": "유하엘",
+      "parentPhone": "01035796389",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::이수빈::85",
+      "name": "이수빈",
+      "parentPhone": "",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::김범준::93",
+      "name": "김범준",
+      "parentPhone": "01036297472",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::김지환::94",
+      "name": "김지환",
+      "parentPhone": "01085822669",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::김강휘::101",
+      "name": "김강휘",
+      "parentPhone": "01091263383",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::이채은::103",
+      "name": "이채은",
+      "parentPhone": "01066394676",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::하유찬::110",
+      "name": "하유찬",
+      "parentPhone": "01075571627",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::정유준::116",
+      "name": "정유준",
+      "parentPhone": "01090443436",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::안치현::119",
+      "name": "안치현",
+      "parentPhone": "01040227709",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::고결::120",
+      "name": "고결",
+      "parentPhone": "01036179299",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::이현범::128",
+      "name": "이현범",
+      "parentPhone": "01094312256",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::현가비::136",
+      "name": "현가비",
+      "parentPhone": "01094083490",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::이연우::138",
+      "name": "이연우",
+      "parentPhone": "01030698339",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::정해수::143",
+      "name": "정해수",
+      "parentPhone": "01040782250",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::범정우::155",
+      "name": "범정우",
+      "parentPhone": "01035988684",
+      "studentPhone": ""
+    },
+    {
+      "id": "최윤영::채정원::163",
+      "name": "채정원",
+      "parentPhone": "01063034167",
+      "studentPhone": ""
+    }
+  ],
+  "이헌철": [
+    {
+      "id": "이헌철::민윤서::2",
+      "name": "민윤서",
+      "parentPhone": "01054043786",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::임창빈::5",
+      "name": "임창빈",
+      "parentPhone": "01041227964",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::김시연::18",
+      "name": "김시연",
+      "parentPhone": "01086701915",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::박준형::26",
+      "name": "박준형",
+      "parentPhone": "01053752902",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::최윤겸::28",
+      "name": "최윤겸",
+      "parentPhone": "01020932459",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::김온유::43",
+      "name": "김온유",
+      "parentPhone": "01030333232",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::김건우::48",
+      "name": "김건우",
+      "parentPhone": "01090952844",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::조석현::49",
+      "name": "조석현",
+      "parentPhone": "01025104035",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::봉유근::51",
+      "name": "봉유근",
+      "parentPhone": "01043377107",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::윤서영::61",
+      "name": "윤서영",
+      "parentPhone": "01072093663",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::고준서::65",
+      "name": "고준서",
+      "parentPhone": "01097905478",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::곽민서::66",
+      "name": "곽민서",
+      "parentPhone": "01044746152",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::백소율::68",
+      "name": "백소율",
+      "parentPhone": "01099537571",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::유현빈::70",
+      "name": "유현빈",
+      "parentPhone": "01091151908",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::신은재::73",
+      "name": "신은재",
+      "parentPhone": "01073810826",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::연정흠::76",
+      "name": "연정흠",
+      "parentPhone": "01054595704",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::유강민::77",
+      "name": "유강민",
+      "parentPhone": "01089309296",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::남이준::78",
+      "name": "남이준",
+      "parentPhone": "01049477172",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::이현::79",
+      "name": "이현",
+      "parentPhone": "01083448867",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::정유진::81",
+      "name": "정유진",
+      "parentPhone": "01033898056",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::전찬식::90",
+      "name": "전찬식",
+      "parentPhone": "01066073353",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::김주환::91",
+      "name": "김주환",
+      "parentPhone": "01037602796",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::김수현::100",
+      "name": "김수현",
+      "parentPhone": "01034667951",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::김도윤::102",
+      "name": "김도윤",
+      "parentPhone": "01090952844",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::김도현::109",
+      "name": "김도현",
+      "parentPhone": "01044087732",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::이유근::122",
+      "name": "이유근",
+      "parentPhone": "01027106068",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::변진우::126",
+      "name": "변진우",
+      "parentPhone": "01034314850",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::장민경::131",
+      "name": "장민경",
+      "parentPhone": "01066741973",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::홍가은::132",
+      "name": "홍가은",
+      "parentPhone": "01094178304",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::윤대철::145",
+      "name": "윤대철",
+      "parentPhone": "01091337052",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::정지후::147",
+      "name": "정지후",
+      "parentPhone": "01050362312",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::김기범::150",
+      "name": "김기범",
+      "parentPhone": "01051881350",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::고하은::152",
+      "name": "고하은",
+      "parentPhone": "01036245135",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::송유담::156",
+      "name": "송유담",
+      "parentPhone": "01093940117",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::송유현::159",
+      "name": "송유현",
+      "parentPhone": "01088081413",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::장민아::161",
+      "name": "장민아",
+      "parentPhone": "01049404508",
+      "studentPhone": ""
+    },
+    {
+      "id": "이헌철::유재훈::166",
+      "name": "유재훈",
+      "parentPhone": "01033838321",
+      "studentPhone": ""
+    }
+  ],
+  "장호민": [
+    {
+      "id": "장호민::정윤슬::19",
+      "name": "정윤슬",
+      "parentPhone": "01051050952",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::김리우::30",
+      "name": "김리우",
+      "parentPhone": "01077214721",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::최설아::31",
+      "name": "최설아",
+      "parentPhone": "01037686015",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::전태식::32",
+      "name": "전태식",
+      "parentPhone": "01066073353",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::김민균::35",
+      "name": "김민균",
+      "parentPhone": "01055068033",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::박서윤::38",
+      "name": "박서윤",
+      "parentPhone": "01065333681",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::전아인::47",
+      "name": "전아인",
+      "parentPhone": "01040040318",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::전연호::52",
+      "name": "전연호",
+      "parentPhone": "01097072353",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::이현은::57",
+      "name": "이현은",
+      "parentPhone": "01062651516",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::박혜윤::64",
+      "name": "박혜윤",
+      "parentPhone": "01026661892",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::하지우::71",
+      "name": "하지우",
+      "parentPhone": "01044217783",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::이예준::80",
+      "name": "이예준",
+      "parentPhone": "01027000526",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::이채라::82",
+      "name": "이채라",
+      "parentPhone": "",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::김서연::86",
+      "name": "김서연",
+      "parentPhone": "01092437376",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::옥범준::87",
+      "name": "옥범준",
+      "parentPhone": "01096733240",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::조성훈::92",
+      "name": "조성훈",
+      "parentPhone": "01020714311",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::오지연::95",
+      "name": "오지연",
+      "parentPhone": "01044192557",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::임가은::97",
+      "name": "임가은",
+      "parentPhone": "01098489802",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::이하람::99",
+      "name": "이하람",
+      "parentPhone": "01026156343",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::김도원::108",
+      "name": "김도원",
+      "parentPhone": "01033386763",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::권은유::111",
+      "name": "권은유",
+      "parentPhone": "01094115087",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::강현준::112",
+      "name": "강현준",
+      "parentPhone": "01075672641",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::이준근::113",
+      "name": "이준근",
+      "parentPhone": "01066245875",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::송유민::115",
+      "name": "송유민",
+      "parentPhone": "01088081413",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::이태우::117",
+      "name": "이태우",
+      "parentPhone": "01051773239",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::이서윤::118",
+      "name": "이서윤",
+      "parentPhone": "01023552566",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::전예솔::121",
+      "name": "전예솔",
+      "parentPhone": "01046413697",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::김재운::127",
+      "name": "김재운",
+      "parentPhone": "01086701915",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::김주안::129",
+      "name": "김주안",
+      "parentPhone": "01090891156",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::이건우::139",
+      "name": "이건우",
+      "parentPhone": "01030698339",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::정민우::160",
+      "name": "정민우",
+      "parentPhone": "01050531629",
+      "studentPhone": ""
+    },
+    {
+      "id": "장호민::박윤지::167",
+      "name": "박윤지",
+      "parentPhone": "01054697072",
+      "studentPhone": ""
+    }
+  ],
+  "박선민": [
+    {
+      "id": "박선민::김해서::20",
+      "name": "김해서",
+      "parentPhone": "01030063875",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::권준우::21",
+      "name": "권준우",
+      "parentPhone": "01094194284",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::황인유::22",
+      "name": "황인유",
+      "parentPhone": "01091142924",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::안소윤::23",
+      "name": "안소윤",
+      "parentPhone": "01064753008",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::안준우::24",
+      "name": "안준우",
+      "parentPhone": "01064753008",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::송준우::25",
+      "name": "송준우",
+      "parentPhone": "01048122027",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::채민찬::27",
+      "name": "채민찬",
+      "parentPhone": "01088489042",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::정한결::29",
+      "name": "정한결",
+      "parentPhone": "01020811787",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::박하은::33",
+      "name": "박하은",
+      "parentPhone": "01043084759",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::김태율::34",
+      "name": "김태율",
+      "parentPhone": "01046466767",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::유해솔::36",
+      "name": "유해솔",
+      "parentPhone": "01035796389",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::황인결::37",
+      "name": "황인결",
+      "parentPhone": "01091142924",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::성지안::39",
+      "name": "성지안",
+      "parentPhone": "01028119685",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::채아윤::40",
+      "name": "채아윤",
+      "parentPhone": "01088489042",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::김나은::44",
+      "name": "김나은",
+      "parentPhone": "01085926745",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::이하온::46",
+      "name": "이하온",
+      "parentPhone": "01031990265",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::김태윤::58",
+      "name": "김태윤",
+      "parentPhone": "01023367296",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::윤서안::59",
+      "name": "윤서안",
+      "parentPhone": "01056125265",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::최승유::60",
+      "name": "최승유",
+      "parentPhone": "01093197855",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::안지호::62",
+      "name": "안지호",
+      "parentPhone": "01050454353",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::정은우::69",
+      "name": "정은우",
+      "parentPhone": "01026119261",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::장예서::72",
+      "name": "장예서",
+      "parentPhone": "01085965515",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::권민교::88",
+      "name": "권민교",
+      "parentPhone": "01045718744",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::박태용::104",
+      "name": "박태용",
+      "parentPhone": "01071529374",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::김이산::105",
+      "name": "김이산",
+      "parentPhone": "01093235110",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::이다윤::106",
+      "name": "이다윤",
+      "parentPhone": "01049081888",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::오현서::107",
+      "name": "오현서",
+      "parentPhone": "01082241436",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::이루미::114",
+      "name": "이루미",
+      "parentPhone": "01043069868",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::정류권::123",
+      "name": "정류권",
+      "parentPhone": "01033898056",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::오윤경::124",
+      "name": "오윤경",
+      "parentPhone": "01071878021",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::전현우::125",
+      "name": "전현우",
+      "parentPhone": "01022772750",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::조태민::134",
+      "name": "조태민",
+      "parentPhone": "01079339026",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::전예서::135",
+      "name": "전예서",
+      "parentPhone": "01046413697",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::황재영::144",
+      "name": "황재영",
+      "parentPhone": "01020533844",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::김도연::146",
+      "name": "김도연",
+      "parentPhone": "01033386763",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::안지우::148",
+      "name": "안지우",
+      "parentPhone": "01034323651",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::양주환::149",
+      "name": "양주환",
+      "parentPhone": "01026433541",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::박서연::157",
+      "name": "박서연",
+      "parentPhone": "01033804794",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::임지호::158",
+      "name": "임지호",
+      "parentPhone": "01093282056",
+      "studentPhone": ""
+    },
+    {
+      "id": "박선민::홍현준::162",
+      "name": "홍현준",
+      "parentPhone": "01034518515",
+      "studentPhone": ""
+    }
+  ],
+  "황재선": [
+    {
+      "id": "황재선::김다윤::83",
+      "name": "김다윤",
+      "parentPhone": "01098400503",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::신지우::89",
+      "name": "신지우",
+      "parentPhone": "01042367667",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::안준혁::96",
+      "name": "안준혁",
+      "parentPhone": "01027459771",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::강이현::98",
+      "name": "강이현",
+      "parentPhone": "01030522547",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::장지후::130",
+      "name": "장지후",
+      "parentPhone": "01066741973",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::권민결::133",
+      "name": "권민결",
+      "parentPhone": "01045723566",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::황서현::137",
+      "name": "황서현",
+      "parentPhone": "01039054973",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::임하준::140",
+      "name": "임하준",
+      "parentPhone": "01048557183",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::안치운::141",
+      "name": "안치운",
+      "parentPhone": "01027440458",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::김리안::142",
+      "name": "김리안",
+      "parentPhone": "01067188016",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::김예준::151",
+      "name": "김예준",
+      "parentPhone": "01045876999",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::신준화::153",
+      "name": "신준화",
+      "parentPhone": "01038382098",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::양승일::154",
+      "name": "양승일",
+      "parentPhone": "01090125412",
+      "studentPhone": ""
+    },
+    {
+      "id": "황재선::이채영::165",
+      "name": "이채영",
+      "parentPhone": "01035201122",
+      "studentPhone": ""
+    }
+  ],
+  "주말반쌤": [
+    {
+      "id": "주말반쌤::박현지::84",
+      "name": "박현지",
+      "parentPhone": "01032072232",
+      "studentPhone": ""
+    },
+    {
+      "id": "주말반쌤::이하음::164",
+      "name": "이하음",
+      "parentPhone": "01083581316",
+      "studentPhone": ""
+    }
+  ]
+};
+
+// (성 빼고) 이름만 반환: 한글 2자 이상이면 첫 글자 제거. 스페이스가 있으면 마지막 토큰.
+function givenName(full) {
+  const s = String(full||"").trim();
+  if (!s) return "";
+  if (/^[가-힣]+$/.test(s) && s.length >= 2) return s.slice(1);
+  const parts = s.split(/\s+/);
+  return parts.length > 1 ? parts[parts.length-1] : s;
+}
+
+// 원클릭 4문구
 const TEMPLATES = [
-  { label:"미등원 안내", text:"{name} 학생 아직 등원하지 않았습니다. 확인 부탁드립니다." },
-  { label:"지각 안내",  text:"{name} 학생이 지각 중입니다. 10분 내 등원 예정인가요?" },
-  { label:"조퇴 안내",  text:"{name} 학생 오늘 조퇴하였습니다. 귀가 시간 확인 부탁드립니다." },
-  { label:"숙제 미제출", text:"{name} 학생 오늘 숙제 미제출입니다. 가정에서 점검 부탁드립니다." },
-  { label:"수업 공지",  text:"{name} 학생 금일 수업 관련 안내드립니다: " }
+  { label:"미등원 안내",  text:"안녕하세요. 서울더함수학학원입니다. {given} 아직 등원 하지 않았습니다." },
+  { label:"조퇴 안내",   text:"서울더함수학학원입니다. {given} 아파서 오늘 조퇴하였습니다. 아이 상태 확인해주세요." },
+  { label:"숙제 미체출",  text:"서울더함수학학원입니다. {given} 오늘 과제 미체출입니다. 가정에서 점검 부탁드립니다." },
+  { label:"교재 공지",   text:"안녕하세요. 서울더함수학학원입니다. {given} 새로운 교재 준비 부탁드립니다." }
 ];
-const onlyDigits = s => (s||"").replace(/\\D/g,"");
-const norm = s => { const d=onlyDigits(s); if(d.length===11) return d.replace(/(\\d{3})(\\d{4})(\\d{4})/,"$1-$2-$3"); if(d.length===10) return d.replace(/(\\d{2,3})(\\d{3,4})(\\d{4})/,"$1-$2-$3"); return s||""; };
+
+const onlyDigits = s => (s||"").replace(/\D/g,"");
+const norm = s => {
+  const d=onlyDigits(s);
+  if (d.length===11) return d.replace(/(\d{3})(\d{4})(\d{4})/,"$1-$2-$3");
+  if (d.length===10) return d.replace(/(\d{2,3})(\d{3,4})(\d{4})/,"$1-$2-$3");
+  return s||"";
+};
 const $  = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
 
 const state = {
   provider:"", defaultFrom:"",
-  roster:{}, teacherList:[], currentTeacher:"", currentStudent:null,
-  toType:"parent"
+  roster: ROSTER,
+  teacherList: Object.keys(ROSTER),
+  currentTeacher: "",
+  currentStudent: null,
+  toType: "parent"
 };
 
 async function loadConfig(){
-  try{ const r=await fetch("/api/sms/config"); const cfg=await r.json();
-    state.provider=cfg.provider||""; state.defaultFrom=String(cfg.defaultFrom||"");
-    $("#fromNum").value=state.defaultFrom||"(서버 미설정)";
-    $("#cfgInfo").textContent=`provider: ${state.provider||"unknown"}`;
-  }catch{ $("#cfgInfo").textContent="서버 설정을 불러오지 못했습니다."; }
-}
-
-async function autoLoadRoster(){
   try{
-    const r = await fetch("/api/roster");
-    const data = await r.json();
-    if(!r.ok || !data.ok) throw new Error(data.error||"no roster");
-    state.roster = data.roster||{};
-    state.teacherList = data.teachers||Object.keys(state.roster);
-    const last = localStorage.getItem(STORAGE_KEY_LAST);
-    state.currentTeacher = (last && state.roster[last]) ? last : (state.teacherList[0]||"");
-    $("#rosterInfo").textContent = `자동 로드 성공 (source: ${data.source||"unknown"}) · 교사 ${state.teacherList.length}명`;
-    renderTeachers(); renderStudents(); updatePreview();
-  }catch(e){
-    $("#rosterInfo").textContent = "자동 로드 실패(/api/roster). CSV 업로드로 불러오세요.";
-  }
+    const r=await fetch("/api/sms/config");
+    if(!r.ok) throw new Error("bad config");
+    const cfg=await r.json();
+    state.defaultFrom=String(cfg.defaultFrom||"");
+    $("#fromNum").value=state.defaultFrom||"(서버 미설정)";
+    $("#cfgInfo").textContent="provider: "+(cfg.provider||"unknown");
+  }catch(e){ $("#cfgInfo").textContent="서버 설정을 불러오지 못했습니다."; }
 }
 
 function setupTemplates(){
   const box=$("#tpls"); box.innerHTML="";
   TEMPLATES.forEach(t=>{
     const b=document.createElement("button");
-    b.className="pill"; b.textContent=t.label;
+    b.className="pill";
+    b.textContent=t.label;
     b.addEventListener("click",()=>{
-      if(state.currentStudent){
-        $("#text").value=t.text.replaceAll("{name}", state.currentStudent.name||"");
-      }else{ $("#text").value=t.text; }
+      const s = state.currentStudent;
+      const txt = t.text.replaceAll("{given}", givenName(s?.name||""));
+      $("#text").value = txt;
       updatePreview();
     });
     box.appendChild(b);
@@ -474,15 +1269,18 @@ function setupToType(){
 
 function renderTeachers(){
   const box=$("#teacherBox"); box.innerHTML="";
-  if(!state.teacherList.length){ box.innerHTML='<span class="muted">교사 데이터가 없습니다.</span>'; return; }
+  if(!state.teacherList.length){
+    box.innerHTML='<span class="muted">선생님 데이터가 없습니다. ROSTER를 채워주세요.</span>'; return;
+  }
   state.teacherList.forEach(t=>{
     const b=document.createElement("button");
     b.className="pill"+(t===state.currentTeacher?" on":"");
     const cnt=(state.roster[t]||[]).length;
-    b.innerHTML=`${t}<span class="badge">${cnt}</span>`;
+    b.innerHTML = `${t}<span class="badge">${cnt}</span>`;
     b.addEventListener("click",()=>{
-      state.currentTeacher=t; localStorage.setItem(STORAGE_KEY_LAST,t);
-      renderTeachers(); renderStudents();
+      state.currentTeacher=t;
+      state.currentStudent=null;
+      renderTeachers(); renderStudents(); updatePreview();
     });
     box.appendChild(b);
   });
@@ -493,26 +1291,26 @@ function renderStudents(){
   const list = (state.roster[state.currentTeacher]||[]);
   const q = ($("#search").value||"").trim();
   const filtered = q ? list.filter(s=>s.name && s.name.includes(q)) : list;
-  if(!filtered.length){ box.innerHTML='<span class="muted">학생이 없습니다.</span>'; state.currentStudent=null; updatePreview(); return; }
+
+  if(!filtered.length){
+    box.innerHTML='<span class="muted">학생이 없습니다.</span>';
+    state.currentStudent=null; updatePreview(); return;
+  }
   filtered.forEach(s=>{
     const b=document.createElement("button");
-    b.className="pill"+(state.currentStudent&&state.currentStudent.id===s.id?" on":"");
+    b.className="pill"+(state.currentStudent && state.currentStudent.id===s.id ? " on":"");
     const phone = norm(s.parentPhone)||norm(s.studentPhone)||"-";
     b.innerHTML = `${s.name}<span class="badge">${phone}</span>`;
     b.addEventListener("click",()=>{
-      state.currentStudent=s; updatePreview();
-      if(!$("#text").value.trim()){ $("#text").value=TEMPLATES[0].text.replaceAll("{name}", s.name||""); updatePreview(); }
-      renderStudents();
+      state.currentStudent=s;
+      if(!$("#text").value.trim()){
+        const t=TEMPLATES[0];
+        $("#text").value = t.text.replaceAll("{given}", givenName(s.name||""));
+      }
+      updatePreview(); renderStudents();
     });
     box.appendChild(b);
   });
-}
-
-function updatePreview(){
-  const s=state.currentStudent;
-  $("#toPreview").textContent = computeTo()||"-";
-  const txt=$("#text").value||"";
-  $("#preview").textContent = (txt||"").replaceAll("{name}", s?.name||"");
 }
 
 function computeTo(){
@@ -523,74 +1321,19 @@ function computeTo(){
   return "";
 }
 
-// manual CSV override
-function hookCSV(){
-  $("#csv").addEventListener("change",(ev)=>{
-    const f=ev.target.files?.[0]; if(!f) return;
-    const fr=new FileReader();
-    fr.onload=()=>{ try{
-      const rows=parseCSV(String(fr.result||""));
-      const built=buildRoster(rows);
-      state.roster=built.roster; state.teacherList=built.teachers;
-      state.currentTeacher=state.teacherList[0]||"";
-      $("#rosterInfo").textContent = `수동 CSV 업로드 완료 · 교사 ${state.teacherList.length}명`;
-      renderTeachers(); renderStudents(); updatePreview();
-    }catch(e){ alert("CSV 파싱 실패: "+e); } };
-    fr.readAsText(f,"utf-8");
-  });
-  $("#search").addEventListener("input", renderStudents);
+function updatePreview(){
+  const s = state.currentStudent;
+  $("#toPreview").textContent = computeTo() || "-";
+  const txt=$("#text").value||"";
+  $("#preview").textContent = txt.replaceAll("{given}", givenName(s?.name||""));
 }
-
-function keyify(h){ return String(h||"").toLowerCase().replace(/\\s+/g,"").replace(/[^\\w가-힣]/g,""); }
-function parseCSV(text){
-  const rows=[]; let row=[], cur="", inQ=false;
-  for(let i=0;i<text.length;i++){
-    const ch=text[i], nx=text[i+1];
-    if(inQ){ if(ch=='"'&&nx=='"'){cur+='"';i++;} else if(ch=='"'){inQ=false;} else cur+=ch; }
-    else{ if(ch=='"'){inQ=true;} else if(ch===','){row.push(cur);cur="";} else if(ch==='\\n'){row.push(cur);rows.push(row);row=[];cur="";} else if(ch==='\\r'){ } else cur+=ch; }
-  }
-  if(cur.length>0 || row.length>0){ row.push(cur); rows.push(row); }
-  return rows;
-}
-function detectColumns(headers){
-  const H=headers.map(keyify);
-  const find=(cands)=>{ for(let i=0;i<H.length;i++){ if(cands.includes(H[i])) return i; } return -1; };
-  return {
-    teacher: find(["담당","담당선생","담당선생님","선생님","teacher","tch","담당자"]),
-    name   : find(["학생이름","이름","name","student","학생","성명"]),
-    parent : find(["학부모전화","학부모연락처","부모전화","보호자전화","보호자연락처","parent","parentphone"]),
-    student: find(["학생전화","연락처","student","studentphone","전화번호","핸드폰","휴대폰","mobile","cell"]),
-  };
-}
-function buildRoster(rows){
-  if(!rows.length) return {roster:{}, teachers:[]};
-  const headers=rows[0]; const idx=detectColumns(headers);
-  if(idx.teacher<0 || idx.name<0) throw new Error("헤더 인식 실패(담당선생/학생이름 필요)");
-  const roster={}, ts=new Set();
-  for(let r=1;r<rows.length;r++){
-    const cols=rows[r]; if(!cols||cols.length<2) continue;
-    const teacher=String(cols[idx.teacher]||"").trim(); if(!teacher) continue;
-    const name   =String(cols[idx.name]||"").trim();    if(!name) continue;
-    const parent = idx.parent>=0 ? (cols[idx.parent]||"") : "";
-    const student= idx.student>=0? (cols[idx.student]||""): "";
-    const obj={id:`${teacher}::${name}::${r}`, name, parentPhone:onlyDigits(parent), studentPhone:onlyDigits(student)};
-    roster[teacher]=roster[teacher]||[]; roster[teacher].push(obj); ts.add(teacher);
-  }
-  const teachers=[...ts].sort((a,b)=>a.localeCompare(b,"ko"));
-  for(const t of teachers){ roster[t].sort((a,b)=>a.name.localeCompare(b.name,"ko")); }
-  return {roster, teachers};
-}
-function onlyDigits(s){ return (s||"").replace(/\\D/g,""); }
 
 async function send(){
-  const token=($("#token").value||"").trim();
-  const headers={"Content-Type":"application/json"}; if(token) headers["Authorization"]="Bearer "+token;
-
+  const s=state.currentStudent;
   const to=onlyDigits(computeTo());
   const from=onlyDigits(state.defaultFrom||"");
-  const s=state.currentStudent;
-  const text=($("#text").value||"").replaceAll("{name}", s?.name||"");
   const dry=$("#dry").checked;
+  const text=($("#text").value||"").replaceAll("{given}", givenName(s?.name||""));
 
   $("#status").textContent="전송 중...";
   if(!s){ alert("학생을 먼저 선택하세요."); $("#status").textContent=""; return; }
@@ -599,11 +1342,14 @@ async function send(){
 
   const payload={to,from,text,student:s.name,dry};
   try{
-    const r=await fetch("/api/sms",{method:"POST",headers,body:JSON.stringify(payload)});
+    const r=await fetch("/api/sms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     const data=await r.json().catch(()=>({ok:false,status:r.status}));
     $("#out").textContent=JSON.stringify(data,null,2);
     $("#status").textContent=r.ok?(dry?"드라이런 완료":"전송 요청 완료"):"전송 실패";
-  }catch(e){ $("#out").textContent=String(e); $("#status").textContent="오류"; }
+  }catch(e){
+    $("#out").textContent=String(e);
+    $("#status").textContent="오류";
+  }
 }
 
 // init
@@ -611,8 +1357,11 @@ async function send(){
   await loadConfig();
   setupTemplates();
   setupToType();
-  hookCSV();
-  await autoLoadRoster();  // 기본: 서버에서 자동 로드 시도
+  state.teacherList.sort(); // 선생님 이름 정렬
+  state.currentTeacher = state.teacherList[0] || "";
+  renderTeachers(); renderStudents(); updatePreview();
+
+  $("#search").addEventListener("input", renderStudents);
   $("#text").addEventListener("input", updatePreview);
   $("#send").addEventListener("click", send);
 })();
