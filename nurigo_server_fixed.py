@@ -342,6 +342,7 @@ const ROSTER = {
   ],
   "이헌철": [
     {"id": "이헌철::민윤서", "name": "민윤서", "parentPhone": "01054043786", "studentPhone": ""},
+    {"id": "이헌철::송준우", "name": "송준우", "parentPhone": "01048122027", "studentPhone": ""},
     {"id": "이헌철::김시연", "name": "김시연", "parentPhone": "01086701915", "studentPhone": ""},
     {"id": "이헌철::박준형", "name": "박준형", "parentPhone": "01053752902", "studentPhone": ""},
     {"id": "이헌철::최윤겸", "name": "최윤겸", "parentPhone": "01020932459", "studentPhone": ""},
