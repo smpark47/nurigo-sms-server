@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Nurigo/Solapi SMS proxy (Flask) - minimal dry-run with Safari/mobile fixes
+Nurigo/Solapi SMS proxy (Flask) with Send Logs
 
 Endpoints
-  GET  /                   -> health
-  GET  /routes             -> list routes (debug)
-  GET  /api/sms/config     -> {"provider": "...", "defaultFrom": "010..."}
-  POST /api/sms            -> {to, from, text, dry?}
-  GET  /ui                 -> simple web UI
+  GET  /                    -> health
+  GET  /routes              -> list routes (debug)
+  GET  /api/sms/config      -> {"provider": "...", "defaultFrom": "010..."}
+  POST /api/sms             -> {to, from, text, teacher?, student?, dry?}
+  GET  /api/sms/logs        -> recent logs (JSON, ?limit=50)
+  GET  /api/sms/logs.csv    -> recent logs (CSV)
+  GET  /ui                  -> simple web UI
 
 Env Vars
   PORT            : bind port (Render sets this automatically)
@@ -16,21 +18,33 @@ Env Vars
   SOLAPI_SECRET   : Solapi API secret
   FORWARD_URL     : if set, forward JSON to this URL instead of calling Solapi
   AUTH_TOKEN      : if set, require header "Authorization: Bearer <AUTH_TOKEN>"
+  LOG_PATH        : logs file path (default: sms_logs.jsonl)
+  LOG_MAX         : in-memory recent logs count (default: 5000)
 """
 import os, json, hmac, hashlib, secrets, requests
 from datetime import datetime, timezone
+from collections import deque
+from threading import Lock
+
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
-from flask import send_from_directory
 
 app = Flask(__name__)
 CORS(app)
 
+# ---- Config ----
 DEFAULT_SENDER = os.getenv("DEFAULT_SENDER", "").strip()
 FORWARD_URL    = os.getenv("FORWARD_URL", "").strip()
 SOLAPI_KEY     = os.getenv("SOLAPI_KEY", "").strip()
 SOLAPI_SECRET  = os.getenv("SOLAPI_SECRET", "").strip()
 AUTH_TOKEN     = os.getenv("AUTH_TOKEN", "").strip()
+
+LOG_PATH = os.getenv("LOG_PATH", "sms_logs.jsonl")
+LOG_MAX  = int(os.getenv("LOG_MAX", "5000"))
+
+# ---- In-memory Logs + File Append ----
+_LOG_Q: deque = deque(maxlen=LOG_MAX)
+_LOG_LOCK = Lock()
 
 def current_provider() -> str:
     if FORWARD_URL:
@@ -39,6 +53,21 @@ def current_provider() -> str:
         return "solapi"
     return "mock"
 
+def _append_log(rec: dict):
+    """Append a record both to memory and JSONL file. Non-fatal on file errors."""
+    rec = dict(rec)
+    with _LOG_LOCK:
+        _LOG_Q.append(rec)
+        try:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+def _utc_now():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+# ---- Routes ----
 @app.get("/")
 def root():
     return {"ok": True, "service": "nurigo-sms-proxy", "provider": current_provider()}, 200
@@ -64,39 +93,77 @@ def check_auth():
 @app.post("/api/sms")
 def sms_send():
     ok, err = check_auth()
-    if not ok: return err
+    if not ok:
+        return err
+
     try:
         payload = request.get_json(force=True) or {}
     except Exception:
         payload = {}
+
     to       = str(payload.get("to", "")).strip()
     from_num = str(payload.get("from", DEFAULT_SENDER)).strip() or DEFAULT_SENDER
     text     = str(payload.get("text", "")).strip()
     dry      = bool(payload.get("dry", False))
+    teacher  = str(payload.get("teacher", "")).strip()
+    student  = str(payload.get("student", "")).strip()
 
     if not to or not text:
         return jsonify({"ok": False, "error": "missing to/text"}), 400
 
+    # Dry run: no forwarding / no external API
     if dry:
-        return jsonify({
+        now = _utc_now()
+        out = {
             "ok": True, "provider": "mock", "dry": True,
             "echo": {"to": to, "from": from_num, "text": text, "len": len(text)},
-            "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "at": now,
+        }
+        _append_log({
+            "at": now, "teacher": teacher, "student": student,
+            "to": to, "from": from_num, "text": text, "len": len(text),
+            "dry": True, "provider": "mock", "ok": True, "status": 200
         })
+        return jsonify(out)
 
+    # Forwarding
     if FORWARD_URL:
         try:
-            r = requests.post(FORWARD_URL, json={"to": to, "from": from_num, "text": text}, timeout=15)
-            return (r.text, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
+            r = requests.post(
+                FORWARD_URL,
+                json={"to": to, "from": from_num, "text": text, "teacher": teacher, "student": student},
+                timeout=15,
+            )
+            now = _utc_now()
+            _append_log({
+                "at": now, "teacher": teacher, "student": student,
+                "to": to, "from": from_num, "text": text, "len": len(text),
+                "dry": False, "provider": "forward", "ok": r.status_code < 300, "status": r.status_code
+            })
+            return (
+                r.text,
+                r.status_code,
+                {"Content-Type": r.headers.get("Content-Type", "application/json")},
+            )
         except Exception as e:
             return jsonify({"ok": False, "error": "forward-failed", "detail": str(e)}), 502
 
+    # Direct Solapi call (HMAC-SHA256)
     if SOLAPI_KEY and SOLAPI_SECRET:
         try:
-            date_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            date_time = _utc_now()
             salt = secrets.token_hex(16)
-            signature = hmac.new(SOLAPI_SECRET.encode("utf-8"), (date_time + salt).encode("utf-8"), hashlib.sha256).hexdigest()
-            auth_header = f"HMAC-SHA256 apiKey={SOLAPI_KEY}, date={date_time}, salt={salt}, signature={signature}"
+            signature = hmac.new(
+                SOLAPI_SECRET.encode("utf-8"),
+                (date_time + salt).encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+
+            auth_header = (
+                f"HMAC-SHA256 apiKey={SOLAPI_KEY}, date={date_time}, "
+                f"salt={salt}, signature={signature}"
+            )
+
             r = requests.post(
                 "https://api.solapi.com/messages/v4/send",
                 headers={"Content-Type": "application/json", "Authorization": auth_header},
@@ -106,29 +173,67 @@ def sms_send():
             ctype = r.headers.get("Content-Type", "")
             data = r.json() if ctype and "application/json" in ctype.lower() else {"raw": r.text}
             out = {"ok": r.status_code < 300, "provider": "solapi", "response": data}
+
+            now = _utc_now()
+            _append_log({
+                "at": now, "teacher": teacher, "student": student,
+                "to": to, "from": from_num, "text": text, "len": len(text),
+                "dry": False, "provider": "solapi", "ok": r.status_code < 300, "status": r.status_code
+            })
             return (json.dumps(out, ensure_ascii=False), r.status_code, {"Content-Type": "application/json"})
         except Exception as e:
             return jsonify({"ok": False, "error": "solapi-failed", "detail": str(e)}), 502
 
+    # Fallback mock if no forwarding/solapi configured
+    now = _utc_now()
+    _append_log({
+        "at": now, "teacher": teacher, "student": student,
+        "to": to, "from": from_num, "text": text, "len": len(text),
+        "dry": True, "provider": "mock", "ok": True, "status": 200
+    })
     return jsonify({
         "ok": True, "provider": "mock", "dry": True,
         "echo": {"to": to, "from": from_num, "text": text, "len": len(text)},
-        "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "at": now,
     })
+
+@app.get("/api/sms/logs")
+def sms_logs():
+    """Recent logs (JSON). Use ?limit=100 (default 50)."""
+    ok, err = check_auth()
+    if not ok: return err
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except Exception:
+        limit = 50
+    with _LOG_LOCK:
+        data = list(_LOG_Q)[-limit:]
+    return jsonify({"ok": True, "logs": data, "count": len(data)})
+
+@app.get("/api/sms/logs.csv")
+def sms_logs_csv():
+    """Download logs as CSV."""
+    ok, err = check_auth()
+    if not ok: return err
+    import csv, io
+    with _LOG_LOCK:
+        rows = list(_LOG_Q)
+    cols = ["at","teacher","student","to","from","text","len","dry","provider","ok","status"]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols)
+    w.writeheader()
+    for r in rows:
+        w.writerow({k: r.get(k, "") for k in cols})
+    return Response(buf.getvalue(), mimetype="text/csv; charset=utf-8",
+                    headers={"Content-Disposition":"attachment; filename=logs.csv"})
 
 # --- Simple Web UI ---
 WEB_UI_HTML = r"""<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>서울더함수학학원 문자 전송 프로그램</title>
-<link rel="icon" href="/static/favicon-chat.svg" type="image/svg+xml">
+<title>문자 전송 프로그램</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="22" fill="%232563eb"/><text x="50" y="62" text-anchor="middle" font-size="60" fill="white">💬</text></svg>' type="image/svg+xml">
 <meta name="theme-color" content="#2563eb">
-<link rel="manifest" href="/static/manifest.webmanifest">
-<meta name="theme-color" content="#2563eb">
-<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
-<link rel="apple-touch-icon" sizes="167x167" href="/static/apple-touch-icon-167.png">
-<link rel="apple-touch-icon" sizes="152x152" href="/static/apple-touch-icon-152.png">
-<link rel="apple-touch-icon" sizes="120x120" href="/static/apple-touch-icon-120.png">
 <style>
 :root{--b:#cbd5e1;--text:#334155;--muted:#64748b;--bg:#f8fafc;--white:#fff;--brand:#2563eb;--accent:#0ea5e9}
 *{box-sizing:border-box}
@@ -157,7 +262,7 @@ h3{margin:0 0 8px 0;font-size:16px}
 /* send-row layout */
 .actionbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 
-/* ✅ Safari gap issue: remove gap inside inlinecheck and use precise margin */
+/* Safari gap issue: remove gap inside inlinecheck and use precise margin */
 .inlinecheck{
   display:inline-flex;
   align-items:center;
@@ -176,7 +281,7 @@ h3{margin:0 0 8px 0;font-size:16px}
   margin-left:4px;      /* exact spacing between checkbox and label */
 }
 
-/* ✅ status text doesn't overlap; responsive placement */
+/* status text doesn't overlap; responsive placement */
 .status{
   margin-left:auto;
   white-space:nowrap;   /* desktop keep one line */
@@ -194,16 +299,14 @@ h3{margin:0 0 8px 0;font-size:16px}
 
 /* mobile safety */
 #search{max-width:100%}
+.table{width:100%;border-collapse:collapse}
+.table th,.table td{padding:6px 4px;border-bottom:1px solid #f1f5f9;text-align:left;font-size:13px}
+.table th{border-bottom:1px solid #e5e7eb;color:#334155}
 </style>
 </head>
-<script>
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/static/sw.js').catch(console.warn);
-}
-</script>
 <body>
 <div class="wrap">
-  <h2>서울더함수학학원 문자 전송 프로그램</h2>
+  <h2>문자 전송 프로그램</h2>
 
   <div class="card">
     <div class="controls">
@@ -257,7 +360,6 @@ if ('serviceWorker' in navigator) {
       <div class="muted mt8">미리보기: <span id="preview"></span></div>
     </div>
 
-    <!-- Send row: button + (checkbox + text only) -->
     <div class="actionbar mt16">
       <button id="send" class="primary">전송</button>
       <label for="dry" class="inlinecheck">
@@ -272,128 +374,43 @@ if ('serviceWorker' in navigator) {
       <pre id="out">(아직 없음)</pre>
     </div>
   </div>
+
+  <div class="card mt16">
+    <h3>3) 발송 로그</h3>
+    <div class="row">
+      <button id="refreshLogs">새로고침</button>
+      <a href="/api/sms/logs.csv" class="pill">CSV 다운로드</a>
+    </div>
+    <div class="mt12">
+      <table id="logTable" class="table">
+        <thead>
+          <tr>
+            <th>시간</th>
+            <th>선생님</th>
+            <th>학생</th>
+            <th>수신</th>
+            <th>내용(앞부분)</th>
+            <th>상태</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="muted mt8">최근 50건 표시</div>
+    </div>
+  </div>
 </div>
 
 <script>
-// ===== ROSTER: from roster.csv (박선민/주말반쌤 제외) =====
+// ===== ROSTER (샘플) =====
+// 실제 명단으로 교체하세요. 필요 시 CSV→자동생성 버전으로 바꿔드릴 수 있습니다.
+// '박선민', '주말반쌤'은 제외 요구에 맞게 사용 시 해당 키를 넣지 마세요.
 const ROSTER = {
-    "장호민": [
-    {"id": "장호민::정윤슬", "name": "정윤슬", "parentPhone": "01051050952", "studentPhone": ""},
-    {"id": "장호민::김리우", "name": "김리우", "parentPhone": "01077214721", "studentPhone": ""},
-    {"id": "장호민::최설아", "name": "최설아", "parentPhone": "01037686015", "studentPhone": ""},
-    {"id": "장호민::전태식", "name": "전태식", "parentPhone": "01066073353", "studentPhone": ""},
-    {"id": "장호민::김민균", "name": "김민균", "parentPhone": "01055068033", "studentPhone": ""},
-    {"id": "장호민::박서윤", "name": "박서윤", "parentPhone": "01065333681", "studentPhone": ""},
-    {"id": "장호민::전아인", "name": "전아인", "parentPhone": "01040040318", "studentPhone": ""},
-    {"id": "장호민::이현은", "name": "이현은", "parentPhone": "01062651516", "studentPhone": ""},
-    {"id": "장호민::박혜윤", "name": "박혜윤", "parentPhone": "01026661892", "studentPhone": ""},
-    {"id": "장호민::하지우", "name": "하지우", "parentPhone": "01044217783", "studentPhone": ""},
-    {"id": "장호민::이채라", "name": "이채라", "parentPhone": "", "studentPhone": ""},
-    {"id": "장호민::김서연", "name": "김서연", "parentPhone": "01092437376", "studentPhone": ""},
-    {"id": "장호민::옥범준", "name": "옥범준", "parentPhone": "01096733240", "studentPhone": ""},
-    {"id": "장호민::조성훈", "name": "조성훈", "parentPhone": "01020714311", "studentPhone": ""},
-    {"id": "장호민::오지연", "name": "오지연", "parentPhone": "01044192557", "studentPhone": ""},
-    {"id": "장호민::임가은", "name": "임가은", "parentPhone": "01098489802", "studentPhone": ""},
-    {"id": "장호민::김도원", "name": "김도원", "parentPhone": "01033386763", "studentPhone": ""},
-    {"id": "장호민::권은유", "name": "권은유", "parentPhone": "01094115087", "studentPhone": ""},
-    {"id": "장호민::강현준", "name": "강현준", "parentPhone": "01075672641", "studentPhone": ""},
-    {"id": "장호민::이준근", "name": "이준근", "parentPhone": "01066245875", "studentPhone": ""},
-    {"id": "장호민::송유민", "name": "송유민", "parentPhone": "01088081413", "studentPhone": ""},
-    {"id": "장호민::이태우", "name": "이태우", "parentPhone": "01051773239", "studentPhone": ""},
-    {"id": "장호민::이서윤", "name": "이서윤", "parentPhone": "01023552566", "studentPhone": ""},
-    {"id": "장호민::전예솔", "name": "전예솔", "parentPhone": "01046413697", "studentPhone": ""},
-    {"id": "장호민::김재운", "name": "김재운", "parentPhone": "01086701915", "studentPhone": ""},
-    {"id": "장호민::김주안", "name": "김주안", "parentPhone": "01090891156", "studentPhone": ""},
-    {"id": "장호민::이건우", "name": "이건우", "parentPhone": "01030698339", "studentPhone": ""},
-    {"id": "장호민::정민우", "name": "정민우", "parentPhone": "01050531629", "studentPhone": ""},
-    {"id": "장호민::박윤지", "name": "박윤지", "parentPhone": "01054697072", "studentPhone": ""},
-    {"id": "장호민::김도연", "name": "김도연", "parentPhone": "01033386763", "studentPhone": ""},
-    {"id": "장호민::고하은", "name": "고하은", "parentPhone": "01036245135", "studentPhone": ""}
-  ],
-  "최윤영": [
-    {"id": "최윤영::기도윤", "name": "기도윤", "parentPhone": "01047612937", "studentPhone": "01057172937"},
-    {"id": "최윤영::황세빈", "name": "황세빈", "parentPhone": "01029340929", "studentPhone": ""},
-    {"id": "최윤영::최시원", "name": "최시원", "parentPhone": "01091925924", "studentPhone": ""},
-    {"id": "최윤영::이동현", "name": "이동현", "parentPhone": "01095905486", "studentPhone": ""},
-    {"id": "최윤영::이소영", "name": "이소영", "parentPhone": "01080253405", "studentPhone": ""},
-    {"id": "최윤영::최현서", "name": "최현서", "parentPhone": "01026618590", "studentPhone": ""},
-    {"id": "최윤영::신유나", "name": "신유나", "parentPhone": "01099245907", "studentPhone": ""},
-    {"id": "최윤영::신유찬", "name": "신유찬", "parentPhone": "01099245907", "studentPhone": ""},
-    {"id": "최윤영::노유종", "name": "노유종", "parentPhone": "01047626707", "studentPhone": ""},
-    {"id": "최윤영::정다율", "name": "정다율", "parentPhone": "01050531629", "studentPhone": ""},
-    {"id": "최윤영::조정운", "name": "조정운", "parentPhone": "01074321567", "studentPhone": ""},
-    {"id": "최윤영::최성현", "name": "최성현", "parentPhone": "01037465003", "studentPhone": ""},
-    {"id": "최윤영::유하엘", "name": "유하엘", "parentPhone": "01035796389", "studentPhone": ""},
-    {"id": "최윤영::이수빈", "name": "이수빈", "parentPhone": "01034725104", "studentPhone": ""},
-    {"id": "최윤영::김범준", "name": "김범준", "parentPhone": "01036297472", "studentPhone": ""},
-    {"id": "최윤영::김지환", "name": "김지환", "parentPhone": "01085822669", "studentPhone": ""},
-    {"id": "최윤영::김강휘", "name": "김강휘", "parentPhone": "01091263383", "studentPhone": ""},
-    {"id": "최윤영::이채은", "name": "이채은", "parentPhone": "01066394676", "studentPhone": ""},
-    {"id": "최윤영::하유찬", "name": "하유찬", "parentPhone": "01075571627", "studentPhone": ""},
-    {"id": "최윤영::정유준", "name": "정유준", "parentPhone": "01090443436", "studentPhone": ""},
-    {"id": "최윤영::안치현", "name": "안치현", "parentPhone": "01040227709", "studentPhone": ""},
-    {"id": "최윤영::고결", "name": "고결", "parentPhone": "01036179299", "studentPhone": ""},
-    {"id": "최윤영::이현범", "name": "이현범", "parentPhone": "01094312256", "studentPhone": ""},
-    {"id": "최윤영::현가비", "name": "현가비", "parentPhone": "01094083490", "studentPhone": ""},
-    {"id": "최윤영::이연우", "name": "이연우", "parentPhone": "01030698339", "studentPhone": ""},
-    {"id": "최윤영::정해수", "name": "정해수", "parentPhone": "01040782250", "studentPhone": ""},
-    {"id": "최윤영::범정우", "name": "범정우", "parentPhone": "01035988684", "studentPhone": ""},
-    {"id": "최윤영::안지우", "name": "안지우", "parentPhone": "01034323651", "studentPhone": ""},
-  ],
-  "이헌철": [
-    {"id": "이헌철::민윤서", "name": "민윤서", "parentPhone": "01054043786", "studentPhone": ""},
-    {"id": "이헌철::송준우", "name": "송준우", "parentPhone": "01048122027", "studentPhone": ""},
-    {"id": "이헌철::김시연", "name": "김시연", "parentPhone": "01086701915", "studentPhone": ""},
-    {"id": "이헌철::박준형", "name": "박준형", "parentPhone": "01053752902", "studentPhone": ""},
-    {"id": "이헌철::최윤겸", "name": "최윤겸", "parentPhone": "01020932459", "studentPhone": ""},
-    {"id": "이헌철::김온유", "name": "김온유", "parentPhone": "01030333232", "studentPhone": ""},
-    {"id": "이헌철::김건우", "name": "김건우", "parentPhone": "01090952844", "studentPhone": ""},
-    {"id": "이헌철::조석현", "name": "조석현", "parentPhone": "01025104035", "studentPhone": ""},
-    {"id": "이헌철::봉유근", "name": "봉유근", "parentPhone": "01043377107", "studentPhone": ""},
-    {"id": "이헌철::윤서영", "name": "윤서영", "parentPhone": "01072093663", "studentPhone": ""},
-    {"id": "이헌철::고준서", "name": "고준서", "parentPhone": "01097905478", "studentPhone": ""},
-    {"id": "이헌철::곽민서", "name": "곽민서", "parentPhone": "01044746152", "studentPhone": ""},
-    {"id": "이헌철::백소율", "name": "백소율", "parentPhone": "01099537571", "studentPhone": ""},
-    {"id": "이헌철::신은재", "name": "신은재", "parentPhone": "01073810826", "studentPhone": ""},
-    {"id": "이헌철::연정흠", "name": "연정흠", "parentPhone": "01054595704", "studentPhone": ""},
-    {"id": "이헌철::유강민", "name": "유강민", "parentPhone": "01089309296", "studentPhone": ""},
-    {"id": "이헌철::남이준", "name": "남이준", "parentPhone": "01049477172", "studentPhone": ""},
-    {"id": "이헌철::이현", "name": "이현", "parentPhone": "01083448867", "studentPhone": ""},
-    {"id": "이헌철::정유진", "name": "정유진", "parentPhone": "01033898056", "studentPhone": ""},
-    {"id": "이헌철::전찬식", "name": "전찬식", "parentPhone": "01066073353", "studentPhone": ""},
-    {"id": "이헌철::김주환", "name": "김주환", "parentPhone": "01037602796", "studentPhone": ""},
-    {"id": "이헌철::김수현", "name": "김수현", "parentPhone": "01034667951", "studentPhone": ""},
-    {"id": "이헌철::김도윤", "name": "김도윤", "parentPhone": "01090952844", "studentPhone": ""},
-    {"id": "이헌철::김도현", "name": "김도현", "parentPhone": "01044087732", "studentPhone": ""},
-    {"id": "이헌철::이유근", "name": "이유근", "parentPhone": "01027106068", "studentPhone": ""},
-    {"id": "이헌철::장민경", "name": "장민경", "parentPhone": "01066741973", "studentPhone": ""},
-    {"id": "이헌철::홍가은", "name": "홍가은", "parentPhone": "01094178304", "studentPhone": ""},
-    {"id": "이헌철::윤대철", "name": "윤대철", "parentPhone": "01091337052", "studentPhone": ""},
-    {"id": "이헌철::정지후", "name": "정지후", "parentPhone": "01050362312", "studentPhone": ""},
-    {"id": "이헌철::김기범", "name": "김기범", "parentPhone": "01051881350", "studentPhone": ""},
-    {"id": "이헌철::송유담", "name": "송유담", "parentPhone": "01093940117", "studentPhone": ""},
-    {"id": "이헌철::장민아", "name": "장민아", "parentPhone": "01049404508", "studentPhone": ""},
-    {"id": "이헌철::유재훈", "name": "유재훈", "parentPhone": "01033838321", "studentPhone": ""}
-  ],
-  "황재선": [
-    {"id": "황재선::김다윤", "name": "김다윤", "parentPhone": "01098400503", "studentPhone": ""},
-    {"id": "황재선::안준혁", "name": "안준혁", "parentPhone": "01027459771", "studentPhone": ""},
-    {"id": "황재선::강이현", "name": "강이현", "parentPhone": "01030522547", "studentPhone": ""},
-    {"id": "황재선::장지후", "name": "장지후", "parentPhone": "01066741973", "studentPhone": ""},
-    {"id": "황재선::권민결", "name": "권민결", "parentPhone": "01045723566", "studentPhone": ""},
-    {"id": "황재선::황서현", "name": "황서현", "parentPhone": "01039054973", "studentPhone": ""},
-    {"id": "황재선::임하준", "name": "임하준", "parentPhone": "01048557183", "studentPhone": ""},
-    {"id": "황재선::안치운", "name": "안치운", "parentPhone": "01027440458", "studentPhone": ""},
-    {"id": "황재선::김리안", "name": "김리안", "parentPhone": "01067188016", "studentPhone": ""},
-    {"id": "황재선::김예준", "name": "김예준", "parentPhone": "01045876999", "studentPhone": ""},
-    {"id": "황재선::신준화", "name": "신준화", "parentPhone": "01038382098", "studentPhone": ""},
-    {"id": "황재선::양승일", "name": "양승일", "parentPhone": "01090125412", "studentPhone": ""},
-    {"id": "장호민::송유현", "name": "송유현", "parentPhone": "01088081413", "studentPhone": ""},
-    {"id": "황재선::이채영", "name": "이채영", "parentPhone": "01035201122", "studentPhone": ""}
+  "예시선생님": [
+    { id:"예시선생님::홍길동", name:"홍길동", parentPhone:"01012345678", studentPhone:"" },
+    { id:"예시선생님::김철수", name:"김철수", parentPhone:"01011112222", studentPhone:"" }
   ]
 };
-// ===== helper functions =====
-["박선민","주말반쌤"].forEach(k => { if (ROSTER[k]) delete ROSTER[k]; });
+// ========================
 
 function givenName(full) {
   const s = String(full||"").trim();
@@ -405,8 +422,8 @@ function givenName(full) {
 
 const TEMPLATES = [
   { label:"미등원 안내",  text:"안녕하세요. 서울더함수학학원입니다. {given} 아직 등원 하지 않았습니다." },
-  { label:"조퇴 안내",   text:"안녕하세요. 서울더함수학학원입니다. {given} 아파서 오늘 조퇴하였습니다. 아이 상태 확인해주세요." },
-  { label:"숙제 미제출",  text:"안녕하세요. 서울더함수학학원입니다. {given} 오늘 과제 미제출입니다. 가정에서 점검 부탁드립니다." },
+  { label:"조퇴 안내",   text:"서울더함수학학원입니다. {given} 아파서 오늘 조퇴하였습니다. 아이 상태 확인해주세요." },
+  { label:"숙제 미체출",  text:"서울더함수학학원입니다. {given} 오늘 과제 미체출입니다. 가정에서 점검 부탁드립니다." },
   { label:"교재 공지",   text:"안녕하세요. 서울더함수학학원입니다. {given} 새로운 교재 준비 부탁드립니다." }
 ];
 
@@ -423,7 +440,7 @@ const $$ = sel => Array.from(document.querySelectorAll(sel));
 const state = {
   roster: ROSTER,
   teacherList: Object.keys(ROSTER),
-  currentTeacher: "",
+  currentTeacher: Object.keys(ROSTER)[0] || "",
   currentStudent: null,
   toType: "parent",
   defaultFrom: ""
@@ -540,7 +557,7 @@ async function send(){
   if(!to){ alert("수신 번호가 비어있습니다."); $("#status").textContent=""; return; }
   if(!text.trim()){ alert("문자 내용을 입력하세요."); $("#status").textContent=""; return; }
 
-  const payload={to,from,text,student:s.name,dry};
+  const payload={to,from,text,student:s.name,teacher:state.currentTeacher,dry};
   try{
     const r=await fetch("/api/sms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     const data=await r.json().catch(()=>({ok:false,status:r.status}));
@@ -550,6 +567,32 @@ async function send(){
     $("#out").textContent=String(e);
     $("#status").textContent="오류";
   }
+  await loadLogs(); // 전송 후 로그 갱신
+}
+
+function renderLogs(items){
+  const tb = document.querySelector("#logTable tbody");
+  tb.innerHTML = items.map(r=>{
+    const title = (r.text||"").slice(0,30).replace(/\n/g," ");
+    const ok = r.ok ? "✅" : "❌";
+    const dry = r.dry ? "DRY" : "REAL";
+    return `<tr>
+      <td>${r.at||""}</td>
+      <td>${r.teacher||""}</td>
+      <td>${r.student||""}</td>
+      <td>${r.to||""}</td>
+      <td>${title}</td>
+      <td>${ok} / ${dry} / ${r.provider||""}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function loadLogs(){
+  try{
+    const r = await fetch("/api/sms/logs?limit=50");
+    const data = await r.json();
+    if(data.ok){ renderLogs(data.logs||[]); }
+  }catch(e){ /* ignore */ }
 }
 
 // init
@@ -558,6 +601,7 @@ async function send(){
   setupTemplates();
   setupToType();
 
+  // teacher list init
   state.teacherList = Object.keys(state.roster);
   state.currentTeacher = state.teacherList[0] || "";
   renderTeachers(); renderStudents(); updatePreview();
@@ -565,6 +609,9 @@ async function send(){
   $("#search").addEventListener("input", renderStudents);
   $("#text").addEventListener("input", updatePreview);
   $("#send").addEventListener("click", send);
+  document.getElementById("refreshLogs").addEventListener("click", loadLogs);
+
+  await loadLogs();
 })();
 </script>
 </body></html>
@@ -574,21 +621,8 @@ async function send(){
 def ui():
     return Response(WEB_UI_HTML, mimetype="text/html; charset=utf-8")
 
-# ✔️ 말풍선+SMS (블루)
-@app.get("/favicon.ico")
-def _favicon():
-    return send_from_directory("static", "favicon-chat.svg", mimetype="image/svg+xml")
-
-# 또는 ✔️ 종이비행기 (청록)
-# @app.get("/favicon.ico")
-# def _favicon():
-#     return send_from_directory("static", "favicon-plane.svg", mimetype="image/svg+xml")
-
-# 또는 ✔️ 계산기 (퍼플)
-# @app.get("/favicon.ico")
-# def _favicon():
-#     return send_from_directory("static", "favicon-math.svg", mimetype="image/svg+xml")
-
+# (참고) favicon 전용 라우트가 204를 반환하면 <link rel="icon">가 무시될 수 있습니다.
+# 현재는 <head>에 data URL 파비콘을 넣었으니 별도 라우트가 없어도 동작합니다.
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
