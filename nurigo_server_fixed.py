@@ -17,7 +17,7 @@ Env Vars
   FORWARD_URL     : if set, forward JSON to this URL instead of calling Solapi
   AUTH_TOKEN      : if set, require header "Authorization: Bearer <AUTH_TOKEN>"
 """
-import os, json, hmac, hashlib, secrets, requests, pathlib, threading, io
+import os, json, hmac, hashlib, secrets, requests
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
@@ -31,8 +31,6 @@ FORWARD_URL    = os.getenv("FORWARD_URL", "").strip()
 SOLAPI_KEY     = os.getenv("SOLAPI_KEY", "").strip()
 SOLAPI_SECRET  = os.getenv("SOLAPI_SECRET", "").strip()
 AUTH_TOKEN     = os.getenv("AUTH_TOKEN", "").strip()
-LOG_PATH = os.getenv('LOG_PATH', 'sms_logs.jsonl').strip() or 'sms_logs.jsonl'
-LOG_MAX_BYTES = int(os.getenv('LOG_MAX_BYTES', '5242880'))  # 5MB
 
 def current_provider() -> str:
     if FORWARD_URL:
@@ -50,69 +48,8 @@ def routes():
     return {"routes": [{"rule": r.rule, "methods": sorted(list(r.methods))} for r in app.url_map.iter_rules()]}
 
 @app.get("/api/sms/config")
-@app.get("/api/sms/logs")
-def sms_logs():
-    ok, err = check_auth()
-    if not ok: 
-        return err
-    try:
-        limit = int(request.args.get("limit", "100"))
-    except Exception:
-        limit = 100
-    rows = _tail_jsonl(LOG_PATH, limit=limit)
-    return jsonify({"ok": True, "logs": rows, "count": len(rows)})
-
 def sms_config():
     return jsonify({"provider": current_provider(), "defaultFrom": DEFAULT_SENDER})
-
-
-# --- logging helpers ---
-_log_lock = threading.Lock()
-
-def _append_log(row: dict):
-    """Append JSON line into LOG_PATH with simple rotation."""
-    try:
-        p = pathlib.Path(LOG_PATH)
-        # rotate if too big
-        if p.exists() and p.stat().st_size > LOG_MAX_BYTES:
-            backup = p.with_suffix(".bak.jsonl")
-            try:
-                backup.unlink(missing_ok=True)  # type: ignore[arg-type]
-            except Exception:
-                pass
-            p.replace(backup)
-        with p.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    except Exception as e:
-        print("[log-append-error]", e)
-
-def _tail_jsonl(path: str, limit: int = 100):
-    """Read last N JSONL rows (newest-first)."""
-    p = pathlib.Path(path)
-    if not p.exists():
-        return []
-    out = []
-    with p.open("rb") as f:
-        f.seek(0, io.SEEK_END)
-        buf = b""
-        pos = f.tell()
-        while pos > 0 and len(out) < limit:
-            step = min(8192, pos)
-            pos -= step
-            f.seek(pos)
-            buf = f.read(step) + buf
-            *lines, buf = buf.split(b"\n")
-            for ln in reversed(lines):
-                if not ln.strip():
-                    continue
-                try:
-                    out.append(json.loads(ln.decode("utf-8")))
-                except Exception:
-                    pass
-                if len(out) >= limit:
-                    break
-    return out
-
 
 def check_auth():
     if not AUTH_TOKEN:
@@ -138,7 +75,6 @@ def sms_send():
     dry      = bool(payload.get("dry", False))
 
     if not to or not text:
-        _append_log({"ok": False, "error": "missing to/text", "provider": current_provider(), "to": to, "from": from_num, "text": text, "at": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"), "ip": request.remote_addr, "ua": request.headers.get("User-Agent","")})
         return jsonify({"ok": False, "error": "missing to/text"}), 400
 
     if dry:
@@ -153,7 +89,6 @@ def sms_send():
             r = requests.post(FORWARD_URL, json={"to": to, "from": from_num, "text": text}, timeout=15)
             return (r.text, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
         except Exception as e:
-            _append_log({"ok": False, "provider": "forward", "error": "forward-failed", "detail": str(e), "to": to, "from": from_num, "text": text, "at": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"), "ip": request.remote_addr, "ua": request.headers.get("User-Agent","")})
             return jsonify({"ok": False, "error": "forward-failed", "detail": str(e)}), 502
 
     if SOLAPI_KEY and SOLAPI_SECRET:
@@ -171,10 +106,8 @@ def sms_send():
             ctype = r.headers.get("Content-Type", "")
             data = r.json() if ctype and "application/json" in ctype.lower() else {"raw": r.text}
             out = {"ok": r.status_code < 300, "provider": "solapi", "response": data}
-            _append_log({"ok": out["ok"], "provider": "solapi", "status": r.status_code, "to": to, "from": from_num, "text": text, "response": data, "at": date_time, "ip": request.remote_addr, "ua": request.headers.get("User-Agent","")})
             return (json.dumps(out, ensure_ascii=False), r.status_code, {"Content-Type": "application/json"})
         except Exception as e:
-            _append_log({"ok": False, "provider": "solapi", "error": "solapi-failed", "detail": str(e), "to": to, "from": from_num, "text": text, "at": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"), "ip": request.remote_addr, "ua": request.headers.get("User-Agent","")})
             return jsonify({"ok": False, "error": "solapi-failed", "detail": str(e)}), 502
 
     return jsonify({
