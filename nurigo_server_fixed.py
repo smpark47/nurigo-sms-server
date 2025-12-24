@@ -411,10 +411,6 @@ const TEMPLATES = [
 ];
 
 const onlyDigits = s => (s||"").replace(/\D/g,"");
-function studentKey(s){
-  return `${s?.id||""}|${s?.name||""}|${onlyDigits(s?.parentPhone||"")}|${onlyDigits(s?.studentPhone||"")}`;
-}
-
 const norm = s => {
   const d=onlyDigits(s);
   if (d.length===11) return d.replace(/(\d{3})(\d{4})(\d{4})/,"$1-$2-$3");
@@ -451,7 +447,9 @@ function setupTemplates(){
     b.className="pill";
     b.textContent=t.label;
     b.addEventListener("click",()=>{
-      $("#text").value = t.text; // keep {given} placeholder
+      const s = state.currentStudent;
+      const txt = t.text.replaceAll("{given}", givenName(s?.name||""));
+      $("#text").value = txt;
       updatePreview();
     });
     box.appendChild(b);
@@ -501,13 +499,13 @@ function renderStudents(){
   }
   filtered.forEach(s=>{
     const b=document.createElement("button");
-    b.className="pill"+(state.currentStudent && studentKey(state.currentStudent)===studentKey(s) ? " on":"");
+    b.className="pill"+(state.currentStudent && state.currentStudent.id===s.id ? " on":"");
     b.textContent = s.name;
     b.addEventListener("click",()=>{
       state.currentStudent=s;
       if(!$("#text").value.trim()){
         const t=TEMPLATES[0];
-        $("#text").value = t.text; // keep {given} placeholder
+        $("#text").value = t.text.replaceAll("{given}", givenName(s.name||""));
       }
       updatePreview(); renderStudents();
     });
