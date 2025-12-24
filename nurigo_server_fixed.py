@@ -277,119 +277,563 @@ if ('serviceWorker' in navigator) {
 <script>
 // ===== ROSTER: from roster.csv (박선민/주말반쌤 제외) =====
 const ROSTER = {
-    "장호민": [
-    {"id": "장호민::정윤슬", "name": "정윤슬", "parentPhone": "01051050952", "studentPhone": ""},
-    {"id": "장호민::김리우", "name": "김리우", "parentPhone": "01077214721", "studentPhone": ""},
-    {"id": "장호민::최설아", "name": "최설아", "parentPhone": "01037686015", "studentPhone": ""},
-    {"id": "장호민::전태식", "name": "전태식", "parentPhone": "01066073353", "studentPhone": ""},
-    {"id": "장호민::김민균", "name": "김민균", "parentPhone": "01055068033", "studentPhone": ""},
-    {"id": "장호민::박서윤", "name": "박서윤", "parentPhone": "01065333681", "studentPhone": ""},
-    {"id": "장호민::전아인", "name": "전아인", "parentPhone": "01040040318", "studentPhone": ""},
-    {"id": "장호민::이현은", "name": "이현은", "parentPhone": "01062651516", "studentPhone": ""},
-    {"id": "장호민::박혜윤", "name": "박혜윤", "parentPhone": "01026661892", "studentPhone": ""},
-    {"id": "장호민::하지우", "name": "하지우", "parentPhone": "01044217783", "studentPhone": ""},
-    {"id": "장호민::이채라", "name": "이채라", "parentPhone": "", "studentPhone": ""},
-    {"id": "장호민::김서연", "name": "김서연", "parentPhone": "01092437376", "studentPhone": ""},
-    {"id": "장호민::옥범준", "name": "옥범준", "parentPhone": "01096733240", "studentPhone": ""},
-    {"id": "장호민::조성훈", "name": "조성훈", "parentPhone": "01020714311", "studentPhone": ""},
-    {"id": "장호민::오지연", "name": "오지연", "parentPhone": "01044192557", "studentPhone": ""},
-    {"id": "장호민::임가은", "name": "임가은", "parentPhone": "01098489802", "studentPhone": ""},
-    {"id": "장호민::김도원", "name": "김도원", "parentPhone": "01033386763", "studentPhone": ""},
-    {"id": "장호민::권은유", "name": "권은유", "parentPhone": "01094115087", "studentPhone": ""},
-    {"id": "장호민::강현준", "name": "강현준", "parentPhone": "01075672641", "studentPhone": ""},
-    {"id": "장호민::이준근", "name": "이준근", "parentPhone": "01066245875", "studentPhone": ""},
-    {"id": "장호민::송유민", "name": "송유민", "parentPhone": "01088081413", "studentPhone": ""},
-    {"id": "장호민::이태우", "name": "이태우", "parentPhone": "01051773239", "studentPhone": ""},
-    {"id": "장호민::이서윤", "name": "이서윤", "parentPhone": "01023552566", "studentPhone": ""},
-    {"id": "장호민::전예솔", "name": "전예솔", "parentPhone": "01046413697", "studentPhone": ""},
-    {"id": "장호민::김재운", "name": "김재운", "parentPhone": "01086701915", "studentPhone": ""},
-    {"id": "장호민::김주안", "name": "김주안", "parentPhone": "01090891156", "studentPhone": ""},
-    {"id": "장호민::이건우", "name": "이건우", "parentPhone": "01030698339", "studentPhone": ""},
-    {"id": "장호민::정민우", "name": "정민우", "parentPhone": "01050531629", "studentPhone": ""},
-    {"id": "장호민::박윤지", "name": "박윤지", "parentPhone": "01054697072", "studentPhone": ""},
-    {"id": "장호민::김도연", "name": "김도연", "parentPhone": "01033386763", "studentPhone": ""},
-    {"id": "장호민::고하은", "name": "고하은", "parentPhone": "01036245135", "studentPhone": ""}
-  ],
-  "최윤영": [
-    {"id": "최윤영::기도윤", "name": "기도윤", "parentPhone": "01047612937", "studentPhone": "01057172937"},
-    {"id": "최윤영::황세빈", "name": "황세빈", "parentPhone": "01029340929", "studentPhone": ""},
-    {"id": "최윤영::최시원", "name": "최시원", "parentPhone": "01091925924", "studentPhone": ""},
-    {"id": "최윤영::이동현", "name": "이동현", "parentPhone": "01095905486", "studentPhone": ""},
-    {"id": "최윤영::이소영", "name": "이소영", "parentPhone": "01080253405", "studentPhone": ""},
-    {"id": "최윤영::최현서", "name": "최현서", "parentPhone": "01026618590", "studentPhone": ""},
-    {"id": "최윤영::신유나", "name": "신유나", "parentPhone": "01099245907", "studentPhone": ""},
-    {"id": "최윤영::신유찬", "name": "신유찬", "parentPhone": "01099245907", "studentPhone": ""},
-    {"id": "최윤영::노유종", "name": "노유종", "parentPhone": "01047626707", "studentPhone": ""},
-    {"id": "최윤영::정다율", "name": "정다율", "parentPhone": "01050531629", "studentPhone": ""},
-    {"id": "최윤영::조정운", "name": "조정운", "parentPhone": "01074321567", "studentPhone": ""},
-    {"id": "최윤영::최성현", "name": "최성현", "parentPhone": "01037465003", "studentPhone": ""},
-    {"id": "최윤영::유하엘", "name": "유하엘", "parentPhone": "01035796389", "studentPhone": ""},
-    {"id": "최윤영::이수빈", "name": "이수빈", "parentPhone": "01034725104", "studentPhone": ""},
-    {"id": "최윤영::김범준", "name": "김범준", "parentPhone": "01036297472", "studentPhone": ""},
-    {"id": "최윤영::김지환", "name": "김지환", "parentPhone": "01085822669", "studentPhone": ""},
-    {"id": "최윤영::김강휘", "name": "김강휘", "parentPhone": "01091263383", "studentPhone": ""},
-    {"id": "최윤영::이채은", "name": "이채은", "parentPhone": "01066394676", "studentPhone": ""},
-    {"id": "최윤영::하유찬", "name": "하유찬", "parentPhone": "01075571627", "studentPhone": ""},
-    {"id": "최윤영::정유준", "name": "정유준", "parentPhone": "01090443436", "studentPhone": ""},
-    {"id": "최윤영::안치현", "name": "안치현", "parentPhone": "01040227709", "studentPhone": ""},
-    {"id": "최윤영::고결", "name": "고결", "parentPhone": "01036179299", "studentPhone": ""},
-    {"id": "최윤영::이현범", "name": "이현범", "parentPhone": "01094312256", "studentPhone": ""},
-    {"id": "최윤영::현가비", "name": "현가비", "parentPhone": "01094083490", "studentPhone": ""},
-    {"id": "최윤영::이연우", "name": "이연우", "parentPhone": "01030698339", "studentPhone": ""},
-    {"id": "최윤영::정해수", "name": "정해수", "parentPhone": "01040782250", "studentPhone": ""},
-    {"id": "최윤영::범정우", "name": "범정우", "parentPhone": "01035988684", "studentPhone": ""},
-    {"id": "최윤영::안지우", "name": "안지우", "parentPhone": "01034323651", "studentPhone": ""},
+  "장호민": [
+    {
+      "name": "전여진",
+      "parentPhone": "01044179457",
+      "studentPhone": "01044189457"
+    },
+    {
+      "name": "신승현",
+      "parentPhone": "01045340302",
+      "studentPhone": "01027390302"
+    },
+    {
+      "name": "허다희",
+      "parentPhone": "01034413292",
+      "studentPhone": "01021243292"
+    },
+    {
+      "name": "조예은",
+      "parentPhone": "01056074622",
+      "studentPhone": ""
+    },
+    {
+      "name": "최승리",
+      "parentPhone": "01056715781",
+      "studentPhone": "01036055781"
+    },
+    {
+      "name": "이정원",
+      "parentPhone": "01080087122",
+      "studentPhone": "01055408535"
+    },
+    {
+      "name": "김정윤",
+      "parentPhone": "01022077171",
+      "studentPhone": ""
+    },
+    {
+      "name": "조희주",
+      "parentPhone": "01034338033",
+      "studentPhone": ""
+    },
+    {
+      "name": "정윤슬",
+      "parentPhone": "01051050952",
+      "studentPhone": ""
+    },
+    {
+      "name": "김리우",
+      "parentPhone": "01077214721",
+      "studentPhone": ""
+    },
+    {
+      "name": "최설아",
+      "parentPhone": "01037686015",
+      "studentPhone": ""
+    },
+    {
+      "name": "전태식",
+      "parentPhone": "01066073353",
+      "studentPhone": ""
+    },
+    {
+      "name": "박하은",
+      "parentPhone": "01043084759",
+      "studentPhone": ""
+    },
+    {
+      "name": "김민균",
+      "parentPhone": "01055068033",
+      "studentPhone": ""
+    },
+    {
+      "name": "박서윤",
+      "parentPhone": "01065333681",
+      "studentPhone": ""
+    },
+    {
+      "name": "전아인",
+      "parentPhone": "01040040318",
+      "studentPhone": ""
+    },
+    {
+      "name": "이현은",
+      "parentPhone": "01062651516",
+      "studentPhone": ""
+    },
+    {
+      "name": "하지우",
+      "parentPhone": "01044217783",
+      "studentPhone": ""
+    },
+    {
+      "name": "이채라",
+      "parentPhone": "",
+      "studentPhone": ""
+    },
+    {
+      "name": "옥범준",
+      "parentPhone": "01096733240",
+      "studentPhone": ""
+    },
+    {
+      "name": "조성훈",
+      "parentPhone": "01020714311",
+      "studentPhone": ""
+    },
+    {
+      "name": "오지연",
+      "parentPhone": "01044192557",
+      "studentPhone": ""
+    },
+    {
+      "name": "임가은",
+      "parentPhone": "01098489802",
+      "studentPhone": ""
+    },
+    {
+      "name": "김도원",
+      "parentPhone": "01033386763",
+      "studentPhone": ""
+    },
+    {
+      "name": "권은유",
+      "parentPhone": "01094115087",
+      "studentPhone": ""
+    },
+    {
+      "name": "강현준",
+      "parentPhone": "01075672641",
+      "studentPhone": ""
+    },
+    {
+      "name": "이준근",
+      "parentPhone": "01066245875",
+      "studentPhone": ""
+    },
+    {
+      "name": "송유민",
+      "parentPhone": "01088081413",
+      "studentPhone": ""
+    },
+    {
+      "name": "이태우",
+      "parentPhone": "01051773239",
+      "studentPhone": ""
+    },
+    {
+      "name": "이서윤",
+      "parentPhone": "01023552566",
+      "studentPhone": ""
+    },
+    {
+      "name": "김재운",
+      "parentPhone": "01086701915",
+      "studentPhone": ""
+    },
+    {
+      "name": "김도연",
+      "parentPhone": "01033386763",
+      "studentPhone": ""
+    },
+    {
+      "name": "정민우",
+      "parentPhone": "01050531629",
+      "studentPhone": ""
+    }
   ],
   "이헌철": [
-    {"id": "이헌철::민윤서", "name": "민윤서", "parentPhone": "01054043786", "studentPhone": ""},
-    {"id": "이헌철::송준우", "name": "송준우", "parentPhone": "01048122027", "studentPhone": ""},
-    {"id": "이헌철::김시연", "name": "김시연", "parentPhone": "01086701915", "studentPhone": ""},
-    {"id": "이헌철::박준형", "name": "박준형", "parentPhone": "01053752902", "studentPhone": ""},
-    {"id": "이헌철::최윤겸", "name": "최윤겸", "parentPhone": "01020932459", "studentPhone": ""},
-    {"id": "이헌철::김온유", "name": "김온유", "parentPhone": "01030333232", "studentPhone": ""},
-    {"id": "이헌철::김건우", "name": "김건우", "parentPhone": "01090952844", "studentPhone": ""},
-    {"id": "이헌철::조석현", "name": "조석현", "parentPhone": "01025104035", "studentPhone": ""},
-    {"id": "이헌철::봉유근", "name": "봉유근", "parentPhone": "01043377107", "studentPhone": ""},
-    {"id": "이헌철::윤서영", "name": "윤서영", "parentPhone": "01072093663", "studentPhone": ""},
-    {"id": "이헌철::고준서", "name": "고준서", "parentPhone": "01097905478", "studentPhone": ""},
-    {"id": "이헌철::곽민서", "name": "곽민서", "parentPhone": "01044746152", "studentPhone": ""},
-    {"id": "이헌철::백소율", "name": "백소율", "parentPhone": "01099537571", "studentPhone": ""},
-    {"id": "이헌철::신은재", "name": "신은재", "parentPhone": "01073810826", "studentPhone": ""},
-    {"id": "이헌철::연정흠", "name": "연정흠", "parentPhone": "01054595704", "studentPhone": ""},
-    {"id": "이헌철::유강민", "name": "유강민", "parentPhone": "01089309296", "studentPhone": ""},
-    {"id": "이헌철::남이준", "name": "남이준", "parentPhone": "01049477172", "studentPhone": ""},
-    {"id": "이헌철::이현", "name": "이현", "parentPhone": "01083448867", "studentPhone": ""},
-    {"id": "이헌철::정유진", "name": "정유진", "parentPhone": "01033898056", "studentPhone": ""},
-    {"id": "이헌철::전찬식", "name": "전찬식", "parentPhone": "01066073353", "studentPhone": ""},
-    {"id": "이헌철::김주환", "name": "김주환", "parentPhone": "01037602796", "studentPhone": ""},
-    {"id": "이헌철::김수현", "name": "김수현", "parentPhone": "01034667951", "studentPhone": ""},
-    {"id": "이헌철::김도윤", "name": "김도윤", "parentPhone": "01090952844", "studentPhone": ""},
-    {"id": "이헌철::김도현", "name": "김도현", "parentPhone": "01044087732", "studentPhone": ""},
-    {"id": "이헌철::이유근", "name": "이유근", "parentPhone": "01027106068", "studentPhone": ""},
-    {"id": "이헌철::장민경", "name": "장민경", "parentPhone": "01066741973", "studentPhone": ""},
-    {"id": "이헌철::홍가은", "name": "홍가은", "parentPhone": "01094178304", "studentPhone": ""},
-    {"id": "이헌철::윤대철", "name": "윤대철", "parentPhone": "01091337052", "studentPhone": ""},
-    {"id": "이헌철::정지후", "name": "정지후", "parentPhone": "01050362312", "studentPhone": ""},
-    {"id": "이헌철::김기범", "name": "김기범", "parentPhone": "01051881350", "studentPhone": ""},
-    {"id": "이헌철::송유담", "name": "송유담", "parentPhone": "01093940117", "studentPhone": ""},
-    {"id": "이헌철::장민아", "name": "장민아", "parentPhone": "01049404508", "studentPhone": ""},
-    {"id": "이헌철::유재훈", "name": "유재훈", "parentPhone": "01033838321", "studentPhone": ""}
+    {
+      "name": "고현빈",
+      "parentPhone": "",
+      "studentPhone": ""
+    },
+    {
+      "name": "차은호",
+      "parentPhone": "01095790135",
+      "studentPhone": "01094003148"
+    },
+    {
+      "name": "최형준",
+      "parentPhone": "01076517704",
+      "studentPhone": ""
+    },
+    {
+      "name": "민윤서",
+      "parentPhone": "01054043786",
+      "studentPhone": ""
+    },
+    {
+      "name": "임창빈",
+      "parentPhone": "01041227964",
+      "studentPhone": ""
+    },
+    {
+      "name": "김시연",
+      "parentPhone": "01086701915",
+      "studentPhone": ""
+    },
+    {
+      "name": "박준형",
+      "parentPhone": "01053752902",
+      "studentPhone": ""
+    },
+    {
+      "name": "최윤겸",
+      "parentPhone": "01020932459",
+      "studentPhone": ""
+    },
+    {
+      "name": "김온유",
+      "parentPhone": "01030333232",
+      "studentPhone": ""
+    },
+    {
+      "name": "김건우",
+      "parentPhone": "01090952844",
+      "studentPhone": ""
+    },
+    {
+      "name": "조석현",
+      "parentPhone": "01025104035",
+      "studentPhone": ""
+    },
+    {
+      "name": "봉유근",
+      "parentPhone": "01043377107",
+      "studentPhone": ""
+    },
+    {
+      "name": "윤서영",
+      "parentPhone": "01072093663",
+      "studentPhone": ""
+    },
+    {
+      "name": "고준서",
+      "parentPhone": "01097905478",
+      "studentPhone": ""
+    },
+    {
+      "name": "백소율",
+      "parentPhone": "01099537571",
+      "studentPhone": ""
+    },
+    {
+      "name": "신은재",
+      "parentPhone": "01073810826",
+      "studentPhone": ""
+    },
+    {
+      "name": "연정흠",
+      "parentPhone": "01054595704",
+      "studentPhone": ""
+    },
+    {
+      "name": "유강민",
+      "parentPhone": "01089309296",
+      "studentPhone": ""
+    },
+    {
+      "name": "남이준",
+      "parentPhone": "01049477172",
+      "studentPhone": ""
+    },
+    {
+      "name": "이현",
+      "parentPhone": "01083448867",
+      "studentPhone": ""
+    },
+    {
+      "name": "정유진",
+      "parentPhone": "01033898056",
+      "studentPhone": ""
+    },
+    {
+      "name": "전찬식",
+      "parentPhone": "01066073353",
+      "studentPhone": ""
+    },
+    {
+      "name": "김주환",
+      "parentPhone": "01037602796",
+      "studentPhone": ""
+    },
+    {
+      "name": "김도윤",
+      "parentPhone": "01090952844",
+      "studentPhone": ""
+    },
+    {
+      "name": "김도현",
+      "parentPhone": "01044087732",
+      "studentPhone": ""
+    },
+    {
+      "name": "이유근",
+      "parentPhone": "01027106068",
+      "studentPhone": ""
+    },
+    {
+      "name": "장민경",
+      "parentPhone": "01066741973",
+      "studentPhone": ""
+    },
+    {
+      "name": "홍가은",
+      "parentPhone": "01094178304",
+      "studentPhone": ""
+    },
+    {
+      "name": "윤대철",
+      "parentPhone": "01091337052",
+      "studentPhone": ""
+    },
+    {
+      "name": "김기범",
+      "parentPhone": "01051881350",
+      "studentPhone": ""
+    },
+    {
+      "name": "송유담",
+      "parentPhone": "01093940117",
+      "studentPhone": ""
+    },
+    {
+      "name": "장민아",
+      "parentPhone": "01049404508",
+      "studentPhone": ""
+    },
+    {
+      "name": "유재훈",
+      "parentPhone": "01033838321",
+      "studentPhone": ""
+    }
+  ],
+  "최윤영": [
+    {
+      "name": "안유진",
+      "parentPhone": "01039113947",
+      "studentPhone": ""
+    },
+    {
+      "name": "김류은",
+      "parentPhone": "01049370692",
+      "studentPhone": "01064880692"
+    },
+    {
+      "name": "진세헌",
+      "parentPhone": "01094233540",
+      "studentPhone": "01093917471"
+    },
+    {
+      "name": "서동욱",
+      "parentPhone": "01089197997",
+      "studentPhone": ""
+    },
+    {
+      "name": "기도윤",
+      "parentPhone": "01047612937",
+      "studentPhone": "01057172937"
+    },
+    {
+      "name": "황세빈",
+      "parentPhone": "01029340929",
+      "studentPhone": ""
+    },
+    {
+      "name": "최시원",
+      "parentPhone": "01091925924",
+      "studentPhone": ""
+    },
+    {
+      "name": "이동현",
+      "parentPhone": "01095905486",
+      "studentPhone": ""
+    },
+    {
+      "name": "이소영",
+      "parentPhone": "01080253405",
+      "studentPhone": ""
+    },
+    {
+      "name": "최현서",
+      "parentPhone": "01026618590",
+      "studentPhone": ""
+    },
+    {
+      "name": "신유나",
+      "parentPhone": "01099245907",
+      "studentPhone": ""
+    },
+    {
+      "name": "신유찬",
+      "parentPhone": "01099245907",
+      "studentPhone": ""
+    },
+    {
+      "name": "노유종",
+      "parentPhone": "01047626707",
+      "studentPhone": ""
+    },
+    {
+      "name": "정다율",
+      "parentPhone": "01050531629",
+      "studentPhone": ""
+    },
+    {
+      "name": "조정운",
+      "parentPhone": "01074321567",
+      "studentPhone": ""
+    },
+    {
+      "name": "최성현",
+      "parentPhone": "01037465003",
+      "studentPhone": ""
+    },
+    {
+      "name": "유하엘",
+      "parentPhone": "01035796389",
+      "studentPhone": ""
+    },
+    {
+      "name": "이수빈",
+      "parentPhone": "01034725104",
+      "studentPhone": "01088404945"
+    },
+    {
+      "name": "김범준",
+      "parentPhone": "01036297472",
+      "studentPhone": ""
+    },
+    {
+      "name": "김지환",
+      "parentPhone": "01085822669",
+      "studentPhone": ""
+    },
+    {
+      "name": "김강휘",
+      "parentPhone": "01091263383",
+      "studentPhone": ""
+    },
+    {
+      "name": "이채은",
+      "parentPhone": "01066394676",
+      "studentPhone": ""
+    },
+    {
+      "name": "하유찬",
+      "parentPhone": "01075571627",
+      "studentPhone": ""
+    },
+    {
+      "name": "안치현",
+      "parentPhone": "01040227709",
+      "studentPhone": ""
+    },
+    {
+      "name": "고결",
+      "parentPhone": "01036179299",
+      "studentPhone": ""
+    },
+    {
+      "name": "이현범",
+      "parentPhone": "01094312256",
+      "studentPhone": ""
+    },
+    {
+      "name": "현가비",
+      "parentPhone": "01094083490",
+      "studentPhone": ""
+    },
+    {
+      "name": "정해수",
+      "parentPhone": "01040782250",
+      "studentPhone": ""
+    },
+    {
+      "name": "안지우",
+      "parentPhone": "01034323651",
+      "studentPhone": ""
+    },
+    {
+      "name": "범정우",
+      "parentPhone": "01035988684",
+      "studentPhone": ""
+    }
   ],
   "황재선": [
-    {"id": "황재선::김다윤", "name": "김다윤", "parentPhone": "01098400503", "studentPhone": ""},
-    {"id": "황재선::안준혁", "name": "안준혁", "parentPhone": "01027459771", "studentPhone": ""},
-    {"id": "황재선::강이현", "name": "강이현", "parentPhone": "01030522547", "studentPhone": ""},
-    {"id": "황재선::장지후", "name": "장지후", "parentPhone": "01066741973", "studentPhone": ""},
-    {"id": "황재선::권민결", "name": "권민결", "parentPhone": "01045723566", "studentPhone": ""},
-    {"id": "황재선::황서현", "name": "황서현", "parentPhone": "01039054973", "studentPhone": ""},
-    {"id": "황재선::임하준", "name": "임하준", "parentPhone": "01048557183", "studentPhone": ""},
-    {"id": "황재선::안치운", "name": "안치운", "parentPhone": "01027440458", "studentPhone": ""},
-    {"id": "황재선::김리안", "name": "김리안", "parentPhone": "01067188016", "studentPhone": ""},
-    {"id": "황재선::김예준", "name": "김예준", "parentPhone": "01045876999", "studentPhone": ""},
-    {"id": "황재선::신준화", "name": "신준화", "parentPhone": "01038382098", "studentPhone": ""},
-    {"id": "황재선::양승일", "name": "양승일", "parentPhone": "01090125412", "studentPhone": ""},
-    {"id": "장호민::송유현", "name": "송유현", "parentPhone": "01088081413", "studentPhone": ""},
-    {"id": "황재선::이채영", "name": "이채영", "parentPhone": "01035201122", "studentPhone": ""}
+    {
+      "name": "강나경",
+      "parentPhone": "01036502963",
+      "studentPhone": "01059322963"
+    },
+    {
+      "name": "변민경",
+      "parentPhone": "01020067093",
+      "studentPhone": "01079387093"
+    },
+    {
+      "name": "박정우",
+      "parentPhone": "01077381679",
+      "studentPhone": ""
+    },
+    {
+      "name": "안준혁",
+      "parentPhone": "01027459771",
+      "studentPhone": ""
+    },
+    {
+      "name": "강이현",
+      "parentPhone": "01030522547",
+      "studentPhone": ""
+    },
+    {
+      "name": "장지후",
+      "parentPhone": "01066741973",
+      "studentPhone": ""
+    },
+    {
+      "name": "권민결",
+      "parentPhone": "01045723566",
+      "studentPhone": ""
+    },
+    {
+      "name": "임하준",
+      "parentPhone": "01048557183",
+      "studentPhone": ""
+    },
+    {
+      "name": "안치운",
+      "parentPhone": "01027440458",
+      "studentPhone": ""
+    },
+    {
+      "name": "김예준",
+      "parentPhone": "01045876999",
+      "studentPhone": ""
+    },
+    {
+      "name": "고하은",
+      "parentPhone": "01036245135",
+      "studentPhone": ""
+    },
+    {
+      "name": "신준화",
+      "parentPhone": "01038382098",
+      "studentPhone": ""
+    },
+    {
+      "name": "송유현",
+      "parentPhone": "01088081413",
+      "studentPhone": ""
+    },
+    {
+      "name": "이채영",
+      "parentPhone": "01035201122",
+      "studentPhone": ""
+    }
   ]
 };
 // ===== helper functions =====
