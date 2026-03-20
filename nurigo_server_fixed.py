@@ -165,8 +165,6 @@ pre{background:#0b1020;color:#c7d2fe;padding:12px;border-radius:10px;overflow:au
 
 <script>
 const ROSTER = {
-<script>
-const ROSTER = {
   "장호민": [
     {"id": "장호민::박재연", "name": "박재연", "parentPhone": "01056399340", "studentPhone": ""},
     {"id": "장호민::신지은", "name": "신지은", "parentPhone": "01029669172", "studentPhone": ""},
@@ -202,8 +200,8 @@ const ROSTER = {
     {"id": "장호민::이서윤", "name": "이서윤", "parentPhone": "01023552566", "studentPhone": ""},
     {"id": "장호민::이건우", "name": "이건우", "parentPhone": "01030698339", "studentPhone": ""},
     {"id": "장호민::김도연", "name": "김도연", "parentPhone": "01033386763", "studentPhone": ""},
-    {"id": "장호민::정민우", "name": "정민우", "parentPhone": "01050531629", "studentPhone": ""}
-    {"id": "최윤영::고결", "name": "고결", "parentPhone": "01036179299", "studentPhone": ""},
+    {"id": "장호민::정민우", "name": "정민우", "parentPhone": "01050531629", "studentPhone": ""},
+    {"id": "장호민::고결", "name": "고결", "parentPhone": "01036179299", "studentPhone": ""},
   ],
   "이헌철": [
     {"id": "이헌철::장유진", "name": "장유진", "parentPhone": "", "studentPhone": ""},
@@ -243,7 +241,7 @@ const ROSTER = {
     {"id": "이헌철::김기범", "name": "김기범", "parentPhone": "01051881350", "studentPhone": ""},
     {"id": "이헌철::송유담", "name": "송유담", "parentPhone": "01093940117", "studentPhone": ""},
     {"id": "이헌철::장민아", "name": "장민아", "parentPhone": "01049404508", "studentPhone": ""}
-    {"id": "장호민::정혜인", "name": "정혜인", "parentPhone": "01088457421", "studentPhone": ""},
+    {"id": "이헌철::정혜인", "name": "정혜인", "parentPhone": "01088457421", "studentPhone": ""},
   ],
   "최윤영": [
     {"id": "최윤영::안유진", "name": "안유진", "parentPhone": "01039113947", "studentPhone": ""},
