@@ -169,7 +169,6 @@ const ROSTER = {
 const ROSTER = {
   "장호민": [
     {"id": "장호민::박재연", "name": "박재연", "parentPhone": "01056399340", "studentPhone": ""},
-    {"id": "장호민::정혜인", "name": "정혜인", "parentPhone": "01088457421", "studentPhone": ""},
     {"id": "장호민::신지은", "name": "신지은", "parentPhone": "01029669172", "studentPhone": ""},
     {"id": "장호민::심지용", "name": "심지용", "parentPhone": "01095158734", "studentPhone": "01095148734"},
     {"id": "장호민::최성윤", "name": "최성윤", "parentPhone": "01083236376", "studentPhone": "01054846376"},
@@ -180,14 +179,11 @@ const ROSTER = {
     {"id": "장호민::정찬", "name": "정찬", "parentPhone": "01051050952", "studentPhone": "01059290952"},
     {"id": "장호민::탁예린", "name": "탁예린", "parentPhone": "01038946463", "studentPhone": "01053816463"},
     {"id": "장호민::탁율", "name": "탁율", "parentPhone": "01038946463", "studentPhone": "01047756463"},
-    {"id": "장호민::배경호", "name": "배경호", "parentPhone": "01050663629", "studentPhone": "01059193629"},
     {"id": "장호민::이다은", "name": "이다은", "parentPhone": "01090232909", "studentPhone": "01090382909"},
     {"id": "장호민::신승현", "name": "신승현", "parentPhone": "01045340302", "studentPhone": "01027390302"},
     {"id": "장호민::허다희", "name": "허다희", "parentPhone": "01034413292", "studentPhone": "01021243292"},
-    {"id": "장호민::조예은", "name": "조예은", "parentPhone": "01056074622", "studentPhone": ""},
     {"id": "장호민::최승리", "name": "최승리", "parentPhone": "01056715781", "studentPhone": "01036055781"},
     {"id": "장호민::이정원", "name": "이정원", "parentPhone": "01080087122", "studentPhone": "01055408535"},
-    {"id": "장호민::조희주", "name": "조희주", "parentPhone": "01034338033", "studentPhone": ""},
     {"id": "장호민::정윤슬", "name": "정윤슬", "parentPhone": "01051050952", "studentPhone": ""},
     {"id": "장호민::김리우", "name": "김리우", "parentPhone": "01077214721", "studentPhone": ""},
     {"id": "장호민::최설아", "name": "최설아", "parentPhone": "01037686015", "studentPhone": ""},
@@ -197,7 +193,6 @@ const ROSTER = {
     {"id": "장호민::박서윤", "name": "박서윤", "parentPhone": "01065333681", "studentPhone": ""},
     {"id": "장호민::전아인", "name": "전아인", "parentPhone": "01040040318", "studentPhone": ""},
     {"id": "장호민::이현은", "name": "이현은", "parentPhone": "01062651516", "studentPhone": ""},
-    {"id": "장호민::이채라", "name": "이채라", "parentPhone": "", "studentPhone": ""},
     {"id": "장호민::옥범준", "name": "옥범준", "parentPhone": "01096733240", "studentPhone": ""},
     {"id": "장호민::오지연", "name": "오지연", "parentPhone": "01044192557", "studentPhone": ""},
     {"id": "장호민::김도원", "name": "김도원", "parentPhone": "01033386763", "studentPhone": ""},
@@ -248,6 +243,7 @@ const ROSTER = {
     {"id": "이헌철::김기범", "name": "김기범", "parentPhone": "01051881350", "studentPhone": ""},
     {"id": "이헌철::송유담", "name": "송유담", "parentPhone": "01093940117", "studentPhone": ""},
     {"id": "이헌철::장민아", "name": "장민아", "parentPhone": "01049404508", "studentPhone": ""}
+    {"id": "장호민::정혜인", "name": "정혜인", "parentPhone": "01088457421", "studentPhone": ""},
   ],
   "최윤영": [
     {"id": "최윤영::안유진", "name": "안유진", "parentPhone": "01039113947", "studentPhone": ""},
